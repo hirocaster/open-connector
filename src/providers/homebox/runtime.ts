@@ -517,6 +517,14 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { entry: payload };
   },
 
+  async accept_group_invitation(input, context) {
+    const id = requiredInputString(input.invitationId, "invitationId");
+    const payload = recordOrEmpty(
+      await requestHomeBoxJson({ context, method: "POST", path: `groups/invitations/${encodeURIComponent(id)}` }),
+    );
+    return { group: payload };
+  },
+
   async list_custom_field_names(_input, context) {
     const payload = await requestHomeBoxJson({ context, method: "GET", path: "entities/fields" });
     return { names: stringArray(payload, "HomeBox custom field names response") };
