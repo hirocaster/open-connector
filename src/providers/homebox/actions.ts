@@ -287,17 +287,6 @@ export const homeBoxActions: ActionDefinition[] = [
     ),
   }),
   defineProviderAction(service, {
-    name: "accept_group_invitation",
-    description:
-      "Join the group behind a HomeBox invitation. After the accepting account joins, it shares the group's collection: every member sees everything created by any member.",
-    inputSchema: s.actionInput(
-      { invitationId: s.nonEmptyString("The invitation UUID from the group invitation.") },
-      ["invitationId"],
-      "Input parameters for accepting one group invitation.",
-    ),
-    outputSchema: s.actionOutput({ group: s.looseObject("The joined HomeBox group.") }, "The joined HomeBox group."),
-  }),
-  defineProviderAction(service, {
     name: "list_custom_field_names",
     description: "List the custom field names in use across the HomeBox group.",
     inputSchema: emptyInputSchema,

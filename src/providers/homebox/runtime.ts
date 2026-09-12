@@ -360,14 +360,6 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { statistics: payload };
   },
 
-  async accept_group_invitation(input, context) {
-    const id = requiredInputString(input.invitationId, "invitationId");
-    const payload = recordOrEmpty(
-      await requestHomeBoxJson({ context, method: "POST", path: `groups/invitations/${encodeURIComponent(id)}` }),
-    );
-    return { group: payload };
-  },
-
   async add_entity_attachment(input, context) {
     const id = requiredInputString(input.entityId, "entityId");
     const file = await readTransitFileInput(input.file, context);
