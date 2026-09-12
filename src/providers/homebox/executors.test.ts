@@ -67,14 +67,14 @@ describe("homebox provider", () => {
       if (url.pathname === "/api/v1/users/login") {
         return loginResponse("token-1");
       }
-      if (url.pathname === "/api/v1/items") {
-        return Response.json({ page: 1, pageSize: 10, total: 1, items: [{ id: "item-1", name: "Laptop" }] });
+      if (url.pathname === "/api/v1/entities") {
+        return Response.json({ page: 1, pageSize: 10, total: 1, items: [{ id: "entity-1", name: "Laptop" }] });
       }
       return new Response("not found", { status: 404 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await proxy({ method: "GET", endpoint: "/items" }, executionContext());
+    const result = await proxy({ method: "GET", endpoint: "/entities" }, executionContext());
     if (!result.ok) {
       throw new Error(`expected proxy success, got: ${result.error.message}`);
     }
@@ -88,9 +88,9 @@ describe("homebox provider", () => {
       stayLoggedIn: true,
     });
 
-    const itemsCall = requests.find((request) => request.url.endsWith("/api/v1/items"))!;
-    expect(itemsCall.url).toBe(`${lanInstanceUrl}/api/v1/items`);
-    expect(itemsCall.headers.get("authorization")).toBe("Bearer token-1");
+    const entitiesCall = requests.find((request) => request.url.endsWith("/api/v1/entities"))!;
+    expect(entitiesCall.url).toBe(`${lanInstanceUrl}/api/v1/entities`);
+    expect(entitiesCall.headers.get("authorization")).toBe("Bearer token-1");
   });
 
   it("re-authenticates and retries once when the cached token is rejected", async () => {
@@ -100,16 +100,16 @@ describe("homebox provider", () => {
     ]);
 
     let logins = 0;
-    let itemsCalls = 0;
+    let entityCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       if (url.pathname === "/api/v1/users/login") {
         logins += 1;
         return loginResponse(logins === 1 ? "expired-token" : "fresh-token");
       }
-      if (url.pathname === "/api/v1/items") {
-        itemsCalls += 1;
-        if (itemsCalls === 1) {
+      if (url.pathname === "/api/v1/entities") {
+        entityCalls += 1;
+        if (entityCalls === 1) {
           return new Response(JSON.stringify({ error: "valid authorization token is required" }), { status: 401 });
         }
         return Response.json({ page: 1, pageSize: 10, total: 0, items: [] });
@@ -118,13 +118,13 @@ describe("homebox provider", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await executors["homebox.list_items"]!({}, executionContext());
+    const result = await executors["homebox.list_entities"]!({}, executionContext());
     if (!result.ok) {
       throw new Error(`expected executor success, got: ${result.error?.message}`);
     }
     expect(result.output).toMatchObject({ page: 1, total: 0 });
     expect(logins).toBe(2);
-    expect(itemsCalls).toBe(2);
+    expect(entityCalls).toBe(2);
   });
 
   it("rejects a LAN instance without the private-network opt-in", async () => {
@@ -134,7 +134,7 @@ describe("homebox provider", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await proxy({ method: "GET", endpoint: "/items" }, executionContext());
+    const result = await proxy({ method: "GET", endpoint: "/entities" }, executionContext());
 
     if (result.ok) {
       throw new Error("expected proxy to reject the LAN base URL");
@@ -148,7 +148,7 @@ describe("homebox provider", () => {
     setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
     vi.stubGlobal("fetch", vi.fn());
 
-    const result = await proxy({ method: "GET", endpoint: "/items" }, { getCredential: async () => undefined });
+    const result = await proxy({ method: "GET", endpoint: "/entities" }, { getCredential: async () => undefined });
 
     if (result.ok) {
       throw new Error("expected proxy to reject missing credentials");
@@ -156,13 +156,13 @@ describe("homebox provider", () => {
     expect(result.error.message).toContain("Configure homebox API key credentials first.");
   });
 
-  it("merges update_item on top of the current item and preserves assetId and custom fields", async () => {
+  it("merges update_entity on top of the current entity and preserves assetId and custom fields", async () => {
     setPrivateNetworkAccessAllowed(true);
     setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
 
     const requests: CapturedRequest[] = [];
-    const item = {
-      id: "item-1",
+    const entity = {
+      id: "entity-1",
       name: "Laptop",
       description: "ThinkPad",
       quantity: 1,
@@ -172,8 +172,10 @@ describe("homebox provider", () => {
       serialNumber: "SN-1",
       modelNumber: "X1",
       manufacturer: "Lenovo",
-      location: { id: "loc-1", name: "Desk" },
-      labels: [{ id: "label-1", name: "Electronics" }],
+      purchasePrice: 1200,
+      entityType: { id: "type-1", name: "Electronics" },
+      parent: { id: "parent-1", name: "Desk" },
+      tags: [{ id: "tag-1", name: "Computers" }],
       fields: [{ id: "field-1", type: "text", name: "Color", textValue: "black", numberValue: 0, booleanValue: false }],
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -188,17 +190,17 @@ describe("homebox provider", () => {
       if (url.pathname === "/api/v1/users/login") {
         return loginResponse("token-1");
       }
-      if (url.pathname === "/api/v1/items/item-1" && (init?.method ?? "GET") === "GET") {
-        return Response.json(item);
+      if (url.pathname === "/api/v1/entities/entity-1" && (init?.method ?? "GET") === "GET") {
+        return Response.json(entity);
       }
-      if (url.pathname === "/api/v1/items/item-1" && init?.method === "PUT") {
-        return Response.json({ ...item, quantity: 5 });
+      if (url.pathname === "/api/v1/entities/entity-1" && init?.method === "PUT") {
+        return Response.json({ ...entity, quantity: 5 });
       }
       return new Response("not found", { status: 404 });
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await executors["homebox.update_item"]!({ itemId: "item-1", quantity: 5 }, executionContext());
+    const result = await executors["homebox.update_entity"]!({ entityId: "entity-1", quantity: 5 }, executionContext());
     if (!result.ok) {
       throw new Error(`expected update success, got: ${result.error?.message}`);
     }
@@ -209,10 +211,11 @@ describe("homebox provider", () => {
     expect(body.assetId).toBe("003-042");
     expect(body.serialNumber).toBe("SN-1");
     expect(body.manufacturer).toBe("Lenovo");
-    expect(body.locationId).toBe("loc-1");
-    expect(body.labelIds).toEqual(["label-1"]);
-    expect(body.parentId).toBeUndefined();
-    expect(body.fields).toEqual(item.fields);
+    expect(body.purchasePrice).toBe(1200);
+    expect(body.entityTypeId).toBe("type-1");
+    expect(body.parentId).toBe("parent-1");
+    expect(body.tagIds).toEqual(["tag-1"]);
+    expect(body.fields).toEqual(entity.fields);
   });
 
   it("maps a failed login to an authorization error", async () => {
@@ -238,7 +241,7 @@ describe("homebox provider", () => {
     expect(result.error?.message).toContain("invalid username or password");
   });
 
-  it("encodes list_items filter parameters as repeated multi-value query params", async () => {
+  it("encodes list_entities filter parameters as repeated multi-value query params", async () => {
     setPrivateNetworkAccessAllowed(true);
     setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
     const requests: CapturedRequest[] = [];
@@ -250,26 +253,22 @@ describe("homebox provider", () => {
         if (url.pathname === "/api/v1/users/login") {
           return loginResponse("token-1");
         }
-        if (url.pathname === "/api/v1/items") {
+        if (url.pathname === "/api/v1/entities") {
           return Response.json({ page: 1, pageSize: 10, total: 0, items: [] });
         }
         return new Response("not found", { status: 404 });
       }),
     );
 
-    const result = await executors["homebox.list_items"]!(
-      { q: "laptop", labelIds: ["a", "b"], includeArchived: true },
-      executionContext(),
-    );
+    const result = await executors["homebox.list_entities"]!({ q: "laptop", tagIds: ["a", "b"] }, executionContext());
     if (!result.ok) {
       throw new Error(`expected list success, got: ${result.error?.message}`);
     }
 
-    const itemsCall = requests.find((request) => new URL(request.url).pathname === "/api/v1/items")!;
-    const url = new URL(itemsCall.url);
+    const entitiesCall = requests.find((request) => new URL(request.url).pathname === "/api/v1/entities")!;
+    const url = new URL(entitiesCall.url);
     expect(url.searchParams.get("q")).toBe("laptop");
-    expect(url.searchParams.getAll("labels")).toEqual(["a", "b"]);
-    expect(url.searchParams.get("includeArchived")).toBe("true");
+    expect(url.searchParams.getAll("tags")).toEqual(["a", "b"]);
   });
 
   it("rejects a maintenance entry without either date", async () => {
@@ -279,7 +278,7 @@ describe("homebox provider", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await executors["homebox.add_maintenance_entry"]!(
-      { itemId: "item-1", name: "Oil change" },
+      { entityId: "entity-1", name: "Oil change" },
       executionContext(),
     );
     if (result.ok) {
@@ -299,7 +298,7 @@ describe("homebox provider", () => {
         if (url.pathname === "/api/v1/users/login") {
           return loginResponse("token-1");
         }
-        if (url.pathname === "/api/v1/items/fields") {
+        if (url.pathname === "/api/v1/entities/fields") {
           return Response.json(["Color", "Serial"]);
         }
         return new Response("not found", { status: 404 });
@@ -313,7 +312,7 @@ describe("homebox provider", () => {
     expect(result.output).toEqual({ names: ["Color", "Serial"] });
   });
 
-  it("reads the plain array responses of list_locations and list_labels", async () => {
+  it("reads the plain array responses of list_entity_types and list_tags", async () => {
     setPrivateNetworkAccessAllowed(true);
     setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
     vi.stubGlobal(
@@ -323,26 +322,26 @@ describe("homebox provider", () => {
         if (url.pathname === "/api/v1/users/login") {
           return loginResponse("token-1");
         }
-        if (url.pathname === "/api/v1/locations") {
-          return Response.json([{ id: "loc-1", name: "Desk", itemCount: 3 }]);
+        if (url.pathname === "/api/v1/entity-types") {
+          return Response.json([{ id: "type-1", name: "Location", isLocation: true }]);
         }
-        if (url.pathname === "/api/v1/labels") {
-          return Response.json([{ id: "label-1", name: "Electronics" }]);
+        if (url.pathname === "/api/v1/tags") {
+          return Response.json([{ id: "tag-1", name: "Electronics" }]);
         }
         return new Response("not found", { status: 404 });
       }),
     );
 
-    const locations = await executors["homebox.list_locations"]!({}, executionContext());
-    if (!locations.ok) {
-      throw new Error(`expected locations, got: ${locations.error?.message}`);
+    const entityTypes = await executors["homebox.list_entity_types"]!({}, executionContext());
+    if (!entityTypes.ok) {
+      throw new Error(`expected entity types, got: ${entityTypes.error?.message}`);
     }
-    expect(locations.output).toEqual({ locations: [{ id: "loc-1", name: "Desk", itemCount: 3 }] });
+    expect(entityTypes.output).toEqual({ entityTypes: [{ id: "type-1", name: "Location", isLocation: true }] });
 
-    const labels = await executors["homebox.list_labels"]!({}, executionContext());
-    if (!labels.ok) {
-      throw new Error(`expected labels, got: ${labels.error?.message}`);
+    const tags = await executors["homebox.list_tags"]!({}, executionContext());
+    if (!tags.ok) {
+      throw new Error(`expected tags, got: ${tags.error?.message}`);
     }
-    expect(labels.output).toEqual({ labels: [{ id: "label-1", name: "Electronics" }] });
+    expect(tags.output).toEqual({ tags: [{ id: "tag-1", name: "Electronics" }] });
   });
 });

@@ -4,6 +4,7 @@ import type { ProviderActionHandlerSubset, ProviderFetch } from "../provider-run
 import {
   optionalBoolean,
   optionalInteger,
+  optionalNumber,
   optionalObjectArray,
   optionalRecord,
   optionalString,
@@ -23,7 +24,7 @@ import {
   requiredInputString,
 } from "../provider-runtime.ts";
 
-const homeBoxCredentialHelpUrl = "https://homebox.software/en/contribute/development/backend/api-handlers/";
+const homeBoxCredentialHelpUrl = "https://homebox.software/en/api/";
 export const homeBoxApiPrefix = "api/v1";
 const homeBoxTokenExpiryBufferMs = 60_000;
 const homeBoxTokenFallbackTtlMs = 5 * 60_000;
@@ -259,7 +260,7 @@ async function requestHomeBoxJson(options: HomeBoxRequestOptions): Promise<unkno
 
 function readPagination(payload: Record<string, unknown>): Record<string, unknown> {
   return {
-    items: optionalObjectArray(payload.items, "HomeBox items response") ?? [],
+    items: optionalObjectArray(payload.items, "HomeBox entities response") ?? [],
     page: optionalInteger(payload.page) ?? 1,
     pageSize: optionalInteger(payload.pageSize) ?? 0,
     total: optionalInteger(payload.total) ?? 0,
@@ -272,65 +273,64 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { summary: payload };
   },
 
-  async list_items(input, context) {
+  async list_entities(input, context) {
     const payload = recordOrEmpty(
       await requestHomeBoxJson({
         context,
         method: "GET",
-        path: "items",
+        path: "entities",
         query: {
           q: optionalString(input.q),
           page: optionalInteger(input.page),
           pageSize: optionalInteger(input.pageSize),
-          labels: optionalStringArray(input.labelIds),
-          locations: optionalStringArray(input.locationIds),
+          tags: optionalStringArray(input.tagIds),
           parentIds: optionalStringArray(input.parentIds),
-          includeArchived: optionalBoolean(input.includeArchived),
-          orderBy: optionalString(input.orderBy),
         },
       }),
     );
     return readPagination(payload);
   },
 
-  async get_item(input, context) {
-    const id = requiredInputString(input.itemId, "itemId");
+  async get_entity(input, context) {
+    const id = requiredInputString(input.entityId, "entityId");
     const payload = recordOrEmpty(
-      await requestHomeBoxJson({ context, method: "GET", path: `items/${encodeURIComponent(id)}` }),
+      await requestHomeBoxJson({ context, method: "GET", path: `entities/${encodeURIComponent(id)}` }),
     );
-    return { item: payload };
+    return { entity: payload };
   },
 
-  async create_item(input, context) {
+  async create_entity(input, context) {
     const name = requiredInputString(input.name, "name");
     const body: Record<string, unknown> = { name };
-    const description = optionalString(input.description);
-    if (description !== undefined) body.description = description;
-    const locationId = optionalString(input.locationId);
-    if (locationId) body.locationId = locationId;
+    const entityTypeId = optionalString(input.entityTypeId);
+    if (entityTypeId) body.entityTypeId = entityTypeId;
     const parentId = optionalString(input.parentId);
     if (parentId) body.parentId = parentId;
-    const labelIds = optionalStringArray(input.labelIds);
-    if (labelIds !== undefined) body.labelIds = labelIds;
-    const payload = recordOrEmpty(await requestHomeBoxJson({ context, method: "POST", path: "items", body }));
-    return { item: payload };
+    const description = optionalString(input.description);
+    if (description !== undefined) body.description = description;
+    const quantity = optionalInteger(input.quantity);
+    if (quantity !== undefined) body.quantity = quantity;
+    const tagIds = optionalStringArray(input.tagIds);
+    if (tagIds !== undefined) body.tagIds = tagIds;
+    const payload = recordOrEmpty(await requestHomeBoxJson({ context, method: "POST", path: "entities", body }));
+    return { entity: payload };
   },
 
-  async update_item(input, context) {
-    const id = requiredInputString(input.itemId, "itemId");
-    // ItemUpdate is a full replacement, so merge the requested changes on top of
-    // the current item instead of wiping untouched fields (serial number,
+  async update_entity(input, context) {
+    const id = requiredInputString(input.entityId, "entityId");
+    // EntityUpdate is a full replacement, so merge the requested changes on top
+    // of the current entity instead of wiping untouched fields (serial number,
     // warranty, custom fields, ...).
     const current = recordOrEmpty(
-      await requestHomeBoxJson({ context, method: "GET", path: `items/${encodeURIComponent(id)}` }),
+      await requestHomeBoxJson({ context, method: "GET", path: `entities/${encodeURIComponent(id)}` }),
     );
-    const location = optionalRecord(current.location) ?? {};
-    const labels = optionalObjectArray(current.labels, "HomeBox item labels response") ?? [];
+    const entityType = optionalRecord(current.entityType) ?? {};
+    const tags = optionalObjectArray(current.tags, "HomeBox entity tags response") ?? [];
     const parent = optionalRecord(current.parent) ?? {};
 
     const body: Record<string, unknown> = {
       name: optionalString(input.name) ?? optionalString(current.name) ?? "",
-      // ItemUpdate always sets assetId; omitting it resets the item's asset
+      // EntityUpdate always sets assetId; omitting it resets the entity's asset
       // id to zero, so echo the current one back.
       assetId: optionalString(current.assetId) ?? "",
       description:
@@ -346,9 +346,9 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
         input.archived === undefined
           ? (optionalBoolean(current.archived) ?? false)
           : requiredBoolean(input.archived, "archived", providerInputError),
-      labelIds:
-        optionalStringArray(input.labelIds) ??
-        labels.map((label) => optionalString(label.id)).filter((labelId): labelId is string => labelId !== undefined),
+      tagIds:
+        optionalStringArray(input.tagIds) ??
+        tags.map((tag) => optionalString(tag.id)).filter((tagId): tagId is string => tagId !== undefined),
       serialNumber: optionalString(input.serialNumber) ?? optionalString(current.serialNumber) ?? "",
       modelNumber: optionalString(input.modelNumber) ?? optionalString(current.modelNumber) ?? "",
       manufacturer: optionalString(input.manufacturer) ?? optionalString(current.manufacturer) ?? "",
@@ -358,25 +358,28 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
           : requiredBoolean(input.lifetimeWarranty, "lifetimeWarranty", providerInputError),
       warrantyExpires: optionalString(input.warrantyExpires) ?? optionalString(current.warrantyExpires) ?? "",
       warrantyDetails: optionalString(input.warrantyDetails) ?? optionalString(current.warrantyDetails) ?? "",
-      purchaseTime: optionalString(input.purchaseTime) ?? optionalString(current.purchaseTime) ?? "",
+      purchaseDate: optionalString(input.purchaseDate) ?? optionalString(current.purchaseDate) ?? "",
       purchaseFrom: optionalString(input.purchaseFrom) ?? optionalString(current.purchaseFrom) ?? "",
-      purchasePrice: optionalString(input.purchasePrice) ?? optionalString(current.purchasePrice) ?? "0",
-      soldTime: optionalString(input.soldTime) ?? optionalString(current.soldTime) ?? "",
+      purchasePrice: optionalNumber(input.purchasePrice) ?? optionalNumber(current.purchasePrice) ?? 0,
+      soldDate: optionalString(input.soldDate) ?? optionalString(current.soldDate) ?? "",
       soldTo: optionalString(input.soldTo) ?? optionalString(current.soldTo) ?? "",
-      soldPrice: optionalString(input.soldPrice) ?? optionalString(current.soldPrice) ?? "0",
+      soldPrice: optionalNumber(input.soldPrice) ?? optionalNumber(current.soldPrice) ?? 0,
       soldNotes: optionalString(input.soldNotes) ?? optionalString(current.soldNotes) ?? "",
       notes: optionalString(input.notes) ?? optionalString(current.notes) ?? "",
+      syncChildEntityLocations:
+        input.syncChildEntityLocations === undefined
+          ? (optionalBoolean(current.syncChildEntityLocations) ?? false)
+          : requiredBoolean(input.syncChildEntityLocations, "syncChildEntityLocations", providerInputError),
       fields:
         input.fields === undefined
           ? optionalObjectArray(current.fields, "HomeBox custom fields response")
           : optionalObjectArray(input.fields, "HomeBox custom fields input"),
     };
-    // Empty UUID strings would fail the adapter's UUID decoding, and the
-    // repository clears an unset locationId or parent, so only send ids we
-    // actually have.
-    const locationId = optionalString(input.locationId) ?? optionalString(location.id);
-    if (locationId) {
-      body.locationId = locationId;
+    // Empty UUID strings would fail the adapter's UUID decoding, so only send
+    // ids we actually have.
+    const entityTypeId = optionalString(input.entityTypeId) ?? optionalString(entityType.id);
+    if (entityTypeId) {
+      body.entityTypeId = entityTypeId;
     }
     const parentId =
       input.parentId === null ? undefined : (optionalString(input.parentId) ?? optionalString(parent.id));
@@ -384,58 +387,64 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
       body.parentId = parentId;
     }
     const payload = recordOrEmpty(
-      await requestHomeBoxJson({ context, method: "PUT", path: `items/${encodeURIComponent(id)}`, body }),
+      await requestHomeBoxJson({ context, method: "PUT", path: `entities/${encodeURIComponent(id)}`, body }),
     );
-    return { item: payload };
+    return { entity: payload };
   },
 
-  async delete_item(input, context) {
-    const id = requiredInputString(input.itemId, "itemId");
-    await requestHomeBoxJson({ context, method: "DELETE", path: `items/${encodeURIComponent(id)}` });
+  async delete_entity(input, context) {
+    const id = requiredInputString(input.entityId, "entityId");
+    await requestHomeBoxJson({ context, method: "DELETE", path: `entities/${encodeURIComponent(id)}` });
     return { deleted: true };
   },
 
-  async list_locations(_input, context) {
-    const payload = await requestHomeBoxJson({ context, method: "GET", path: "locations" });
-    return { locations: optionalObjectArray(payload, "HomeBox locations response") };
+  async list_entity_types(_input, context) {
+    const payload = await requestHomeBoxJson({ context, method: "GET", path: "entity-types" });
+    return { entityTypes: optionalObjectArray(payload, "HomeBox entity types response") };
   },
 
-  async create_location(input, context) {
+  async create_entity_type(input, context) {
     const name = requiredInputString(input.name, "name");
     const body: Record<string, unknown> = { name };
     const description = optionalString(input.description);
     if (description !== undefined) body.description = description;
-    const parentId = optionalString(input.parentId);
-    if (parentId) body.parentId = parentId;
-    const payload = recordOrEmpty(await requestHomeBoxJson({ context, method: "POST", path: "locations", body }));
-    return { location: payload };
+    const icon = optionalString(input.icon);
+    if (icon !== undefined) body.icon = icon;
+    const isLocation = optionalBoolean(input.isLocation);
+    if (isLocation !== undefined) body.isLocation = isLocation;
+    const payload = recordOrEmpty(await requestHomeBoxJson({ context, method: "POST", path: "entity-types", body }));
+    return { entityType: payload };
   },
 
-  async delete_location(input, context) {
-    const id = requiredInputString(input.locationId, "locationId");
-    await requestHomeBoxJson({ context, method: "DELETE", path: `locations/${encodeURIComponent(id)}` });
+  async delete_entity_type(input, context) {
+    const id = requiredInputString(input.entityTypeId, "entityTypeId");
+    await requestHomeBoxJson({ context, method: "DELETE", path: `entity-types/${encodeURIComponent(id)}` });
     return { deleted: true };
   },
 
-  async list_labels(_input, context) {
-    const payload = await requestHomeBoxJson({ context, method: "GET", path: "labels" });
-    return { labels: optionalObjectArray(payload, "HomeBox labels response") };
+  async list_tags(_input, context) {
+    const payload = await requestHomeBoxJson({ context, method: "GET", path: "tags" });
+    return { tags: optionalObjectArray(payload, "HomeBox tags response") };
   },
 
-  async create_label(input, context) {
+  async create_tag(input, context) {
     const name = requiredInputString(input.name, "name");
     const body: Record<string, unknown> = { name };
     const description = optionalString(input.description);
     if (description !== undefined) body.description = description;
     const color = optionalString(input.color);
     if (color !== undefined) body.color = color;
-    const payload = recordOrEmpty(await requestHomeBoxJson({ context, method: "POST", path: "labels", body }));
-    return { label: payload };
+    const icon = optionalString(input.icon);
+    if (icon !== undefined) body.icon = icon;
+    const parentId = optionalString(input.parentId);
+    if (parentId) body.parentId = parentId;
+    const payload = recordOrEmpty(await requestHomeBoxJson({ context, method: "POST", path: "tags", body }));
+    return { tag: payload };
   },
 
-  async delete_label(input, context) {
-    const id = requiredInputString(input.labelId, "labelId");
-    await requestHomeBoxJson({ context, method: "DELETE", path: `labels/${encodeURIComponent(id)}` });
+  async delete_tag(input, context) {
+    const id = requiredInputString(input.tagId, "tagId");
+    await requestHomeBoxJson({ context, method: "DELETE", path: `tags/${encodeURIComponent(id)}` });
     return { deleted: true };
   },
 
@@ -444,8 +453,8 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { statistics: payload };
   },
 
-  async add_item_attachment(input, context) {
-    const id = requiredInputString(input.itemId, "itemId");
+  async add_entity_attachment(input, context) {
+    const id = requiredInputString(input.entityId, "entityId");
     const file = await readTransitFileInput(input.file, context);
     const form = new FormData();
     form.append("file", new File([file.file], file.name, { type: file.mimeType ?? "application/octet-stream" }));
@@ -454,40 +463,34 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     if (type !== undefined) {
       form.append("type", type);
     }
+    const primary = optionalBoolean(input.primary);
+    if (primary !== undefined) {
+      form.append("primary", String(primary));
+    }
     const payload = recordOrEmpty(
       await requestHomeBoxJson({
         context,
         method: "POST",
-        path: `items/${encodeURIComponent(id)}/attachments`,
+        path: `entities/${encodeURIComponent(id)}/attachments`,
         body: form,
       }),
     );
-    return { item: payload };
+    return { entity: payload };
   },
 
   async get_maintenance_log(input, context) {
-    const id = requiredInputString(input.itemId, "itemId");
-    const payload = recordOrEmpty(
-      await requestHomeBoxJson({
-        context,
-        method: "GET",
-        path: `items/${encodeURIComponent(id)}/maintenance`,
-        query: {
-          completed: optionalBoolean(input.completed),
-          scheduled: optionalBoolean(input.scheduled),
-        },
-      }),
-    );
-    return {
-      itemId: optionalString(payload.itemId) ?? id,
-      costAverage: payload.costAverage ?? 0,
-      costTotal: payload.costTotal ?? 0,
-      entries: optionalObjectArray(payload.entries, "HomeBox maintenance log response") ?? [],
-    };
+    const id = requiredInputString(input.entityId, "entityId");
+    const payload = await requestHomeBoxJson({
+      context,
+      method: "GET",
+      path: `entities/${encodeURIComponent(id)}/maintenance`,
+      query: { status: optionalString(input.status) },
+    });
+    return { entries: optionalObjectArray(payload, "HomeBox maintenance log response") };
   },
 
   async add_maintenance_entry(input, context) {
-    const id = requiredInputString(input.itemId, "itemId");
+    const id = requiredInputString(input.entityId, "entityId");
     const name = requiredInputString(input.name, "name");
     const completedDate = optionalString(input.completedDate);
     const scheduledDate = optionalString(input.scheduledDate);
@@ -505,7 +508,7 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
       await requestHomeBoxJson({
         context,
         method: "POST",
-        path: `items/${encodeURIComponent(id)}/maintenance`,
+        path: `entities/${encodeURIComponent(id)}/maintenance`,
         body,
       }),
     );
@@ -513,7 +516,7 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
   },
 
   async list_custom_field_names(_input, context) {
-    const payload = await requestHomeBoxJson({ context, method: "GET", path: "items/fields" });
+    const payload = await requestHomeBoxJson({ context, method: "GET", path: "entities/fields" });
     return { names: stringArray(payload, "HomeBox custom field names response") };
   },
 
@@ -522,7 +525,7 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     const payload = await requestHomeBoxJson({
       context,
       method: "GET",
-      path: "items/fields/values",
+      path: "entities/fields/values",
       query: { field },
     });
     return { values: stringArray(payload, "HomeBox custom field values response") };

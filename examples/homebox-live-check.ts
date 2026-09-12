@@ -2,7 +2,7 @@
  * Live verification of the HomeBox provider against a real instance.
  *
  * Read-only by default; the only mutating check creates and deletes a
- * marker-prefixed location, so repeated runs stay clean.
+ * marker-prefixed entity type, so repeated runs stay clean.
  *
  * Set HOMEBOX_BASE_URL, HOMEBOX_USERNAME, and HOMEBOX_PASSWORD, then run:
  *
@@ -34,10 +34,10 @@ const context = {
 };
 
 const E2E_MARKER = "connector-e2e";
-const createdLocationName = `${E2E_MARKER}-location`;
+const createdEntityTypeName = `${E2E_MARKER}-type`;
 
 let failures = 0;
-let createdLocationId: string | null = null;
+let createdEntityTypeId: string | null = null;
 
 function check(label: string, condition: boolean, detail: string): void {
   if (condition) {
@@ -70,19 +70,19 @@ async function main(): Promise<void> {
     check("status is healthy", result.summary.health === true, "health flag is not true");
   });
 
-  await step("list locations", async () => {
-    const result = (await homeBoxActionHandlers.list_locations?.({}, context)) as { locations: unknown[] };
-    check("location list responds", Array.isArray(result.locations), "no locations array");
+  await step("list entity types", async () => {
+    const result = (await homeBoxActionHandlers.list_entity_types?.({}, context)) as { entityTypes: unknown[] };
+    check("entity type list responds", Array.isArray(result.entityTypes), "no entityTypes array");
   });
 
-  await step("list labels", async () => {
-    const result = (await homeBoxActionHandlers.list_labels?.({}, context)) as { labels: unknown[] };
-    check("label list responds", Array.isArray(result.labels), "no labels array");
+  await step("list tags", async () => {
+    const result = (await homeBoxActionHandlers.list_tags?.({}, context)) as { tags: unknown[] };
+    check("tag list responds", Array.isArray(result.tags), "no tags array");
   });
 
-  await step("search items", async () => {
-    const result = (await homeBoxActionHandlers.list_items?.({}, context)) as { total: number; items: unknown[] };
-    check("item search responds", typeof result.total === "number", "no total");
+  await step("search entities", async () => {
+    const result = (await homeBoxActionHandlers.list_entities?.({}, context)) as { total: number; items: unknown[] };
+    check("entity search responds", typeof result.total === "number", "no total");
   });
 
   await step("custom field names", async () => {
@@ -91,32 +91,33 @@ async function main(): Promise<void> {
   });
 
   if (!failures) {
-    await step("create marker location", async () => {
-      const result = (await homeBoxActionHandlers.create_location?.({ name: createdLocationName }, context)) as {
-        location: { id: string };
+    await step("create marker entity type", async () => {
+      const result = (await homeBoxActionHandlers.create_entity_type?.({ name: createdEntityTypeName }, context)) as {
+        entityType: { id: string };
       };
-      createdLocationId = result.location.id;
+      createdEntityTypeId = result.entityType.id;
       check(
-        "location created",
-        typeof createdLocationId === "string" && createdLocationId.length > 0,
-        "no location id",
+        "entity type created",
+        typeof createdEntityTypeId === "string" && createdEntityTypeId.length > 0,
+        "no entity type id",
       );
     });
 
-    await step("delete marker location", async () => {
-      if (createdLocationId) {
-        const result = (await homeBoxActionHandlers.delete_location?.({ locationId: createdLocationId }, context)) as {
-          deleted: boolean;
-        };
-        check("location deleted", result.deleted === true, "deleted flag is not true");
+    await step("delete marker entity type", async () => {
+      if (createdEntityTypeId) {
+        const result = (await homeBoxActionHandlers.delete_entity_type?.(
+          { entityTypeId: createdEntityTypeId },
+          context,
+        )) as { deleted: boolean };
+        check("entity type deleted", result.deleted === true, "deleted flag is not true");
       }
     });
   }
 
   if (failures > 0) {
     console.error(`[homebox] live check failed: ${failures} check(s) failed.`);
-    if (createdLocationId) {
-      console.error(`[homebox] leaving ${createdLocationName} (${createdLocationId}) for inspection.`);
+    if (createdEntityTypeId) {
+      console.error(`[homebox] leaving ${createdEntityTypeName} (${createdEntityTypeId}) for inspection.`);
     }
     process.exitCode = 1;
   } else {

@@ -11,7 +11,7 @@ export const provider: ProviderDefinition = {
   service,
   displayName: "HomeBox",
   description:
-    "Home inventory and organization. Search, create, and update items, locations, labels, maintenance records, and attachments on a self-hosted HomeBox instance.",
+    "Home inventory and organization (entities, tags, entity types, maintenance, attachments) on a self-hosted HomeBox instance.",
   categories: ["Productivity", "Data"],
   authTypes: ["api_key"],
   auth: [
