@@ -259,9 +259,11 @@ async function requestHomeBoxJson(options: HomeBoxRequestOptions): Promise<unkno
 }
 
 function readPagination(payload: Record<string, unknown>): Record<string, unknown> {
+  const page = optionalInteger(payload.page) ?? 1;
   return {
     items: optionalObjectArray(payload.items, "HomeBox entities response") ?? [],
-    page: optionalInteger(payload.page) ?? 1,
+    // The instance echoes -1 when no page was requested; normalize to 1.
+    page: page > 0 ? page : 1,
     pageSize: optionalInteger(payload.pageSize) ?? 0,
     total: optionalInteger(payload.total) ?? 0,
   };
