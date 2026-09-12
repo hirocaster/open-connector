@@ -16,6 +16,7 @@ import {
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import {
   createProviderTimeout,
+  isAbortSignalError,
   providerInputError,
   ProviderRequestError,
   providerUserAgent,
@@ -101,7 +102,7 @@ function buildHomeBoxUrl(
   return url.toString();
 }
 
-async function performHomeBoxRequest(options: HomeBoxRequestOptions): Promise<Response> {
+async function performHomeBoxRequest(options: HomeBoxRequestOptions, signal: AbortSignal): Promise<Response> {
   const { context } = options;
   const url = buildHomeBoxUrl(context, options.path, options.query);
   const headers = new Headers({ accept: "application/json", "user-agent": providerUserAgent });
@@ -115,22 +116,12 @@ async function performHomeBoxRequest(options: HomeBoxRequestOptions): Promise<Re
     body = JSON.stringify(options.body);
   }
 
-  const timeout = createProviderTimeout(context.signal);
-  try {
-    return await context.fetcher(url, {
-      method: options.method,
-      headers,
-      body,
-      signal: timeout.signal,
-    });
-  } catch (error) {
-    if (timeout.didTimeout()) {
-      throw new ProviderRequestError(504, "HomeBox request timed out");
-    }
-    throw error;
-  } finally {
-    timeout.cleanup();
-  }
+  return context.fetcher(url, {
+    method: options.method,
+    headers,
+    body,
+    signal,
+  });
 }
 
 function mapHomeBoxHttpError(status: number, payload: unknown): ProviderRequestError {
@@ -145,15 +136,27 @@ function mapHomeBoxHttpError(status: number, payload: unknown): ProviderRequestE
 }
 
 async function requestHomeBoxJson(options: HomeBoxRequestOptions): Promise<unknown> {
-  const response = await performHomeBoxRequest(options);
-  const payload = await readProviderJsonBody(response, {
-    emptyBody: null,
-    invalidJsonMessage: "HomeBox returned an invalid JSON response",
-  });
-  if (response.ok) {
-    return payload;
+  // The timeout must cover the body read too: a response can hand back headers
+  // and then stall mid-body, and without a live signal that hang is unbounded.
+  const timeout = createProviderTimeout(options.context.signal);
+  try {
+    const response = await performHomeBoxRequest(options, timeout.signal);
+    const payload = await readProviderJsonBody(response, {
+      emptyBody: null,
+      invalidJsonMessage: "HomeBox returned an invalid JSON response",
+    });
+    if (response.ok) {
+      return payload;
+    }
+    throw mapHomeBoxHttpError(response.status, payload);
+  } catch (error) {
+    if (timeout.didTimeout() || isAbortSignalError(timeout.signal, error)) {
+      throw new ProviderRequestError(504, "HomeBox request timed out");
+    }
+    throw error;
+  } finally {
+    timeout.cleanup();
   }
-  throw mapHomeBoxHttpError(response.status, payload);
 }
 
 function readPagination(payload: Record<string, unknown>): Record<string, unknown> {
@@ -218,6 +221,26 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
 
   async update_entity(input, context) {
     const id = requiredInputString(input.entityId, "entityId");
+    // EntityPatch covers only quantity, parentId, tagIds, and entityTypeId.
+    // When the caller limits itself to those fields, PATCH is safer than the
+    // get-merge-PUT below because it never reads a stale snapshot.
+    const patchableFields = ["quantity", "parentId", "tagIds", "entityTypeId"];
+    const requestedFields = Object.keys(input).filter((key) => key !== "entityId");
+    if (requestedFields.length > 0 && requestedFields.every((key) => patchableFields.includes(key))) {
+      const body: Record<string, unknown> = {};
+      const quantity = optionalInteger(input.quantity);
+      if (quantity !== undefined) body.quantity = quantity;
+      const parentId = optionalString(input.parentId);
+      if (parentId !== undefined) body.parentId = parentId;
+      const tagIds = optionalStringArray(input.tagIds);
+      if (tagIds !== undefined) body.tagIds = tagIds;
+      const entityTypeId = optionalString(input.entityTypeId);
+      if (entityTypeId) body.entityTypeId = entityTypeId;
+      const payload = recordOrEmpty(
+        await requestHomeBoxJson({ context, method: "PATCH", path: `entities/${encodeURIComponent(id)}`, body }),
+      );
+      return { entity: payload };
+    }
     // EntityUpdate is a full replacement, so merge the requested changes on top
     // of the current entity instead of wiping untouched fields (serial number,
     // warranty, custom fields, ...).

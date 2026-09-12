@@ -26,16 +26,29 @@ const maintenanceStatusSchema = s.stringEnum("Which maintenance entries to inclu
   "both",
 ]);
 
-const customFieldSchema = s.looseRequiredObject(
-  "One custom field attached to the entity. Exactly one of textValue, numberValue, or booleanValue should be set, matching the type.",
-  {
-    name: s.nonEmptyString("The field name, for example Color or Serial."),
-    type: s.stringEnum("The field value type.", ["text", "number", "boolean", "time"]),
-    textValue: s.string("The text value; used when type is text."),
-    numberValue: s.integer("The numeric value; used when type is number."),
-    booleanValue: s.boolean("The boolean value; used when type is boolean."),
-  },
-  { optional: ["textValue", "numberValue", "booleanValue"] },
+const customFieldSchema = s.anyOf(
+  "One custom field attached to the entity. The value property must match the declared type.",
+  [
+    s.requiredObject("A text custom field.", {
+      name: s.nonEmptyString("The field name, for example Color or Serial."),
+      type: s.stringEnum("The field type.", ["text"]),
+      textValue: s.string("The text value."),
+    }),
+    s.requiredObject("A numeric custom field.", {
+      name: s.nonEmptyString("The field name, for example Color or Serial."),
+      type: s.stringEnum("The field type.", ["number"]),
+      numberValue: s.integer("The numeric value."),
+    }),
+    s.requiredObject("A boolean custom field.", {
+      name: s.nonEmptyString("The field name, for example Color or Serial."),
+      type: s.stringEnum("The field type.", ["boolean"]),
+      booleanValue: s.boolean("The boolean value."),
+    }),
+    s.requiredObject("A time custom field. HomeBox stores the timestamp server-side, so no value property is sent.", {
+      name: s.nonEmptyString("The field name, for example Color or Serial."),
+      type: s.stringEnum("The field type.", ["time"]),
+    }),
+  ],
 );
 
 const dateSchema = s.string("A date in YYYY-MM-DD format.", { pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
@@ -114,7 +127,7 @@ export const homeBoxActions: ActionDefinition[] = [
         quantity: s.integer("The quantity."),
         insured: s.boolean("Whether the entity is insured."),
         archived: s.boolean("Whether the entity is archived."),
-        entityTypeId: s.nullableString("The entity type UUID, or null to unset it."),
+        entityTypeId: s.string("The entity type UUID; when omitted the current type is kept."),
         tagIds: s.array("The tag UUIDs.", s.string("One tag UUID.")),
         parentId: s.nullableString("The parent entity UUID, or null to unset it."),
         serialNumber: s.string("The serial number."),
