@@ -56,10 +56,7 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
 
 export const credentialValidators: CredentialValidators = {
   apiKey(input, { fetcher, signal }): Promise<CredentialValidationResult> {
-    // Re-guard the shared validator fetcher with HomeBox's private-network
-    // opt-in so validating a private instance baseUrl works when the
-    // deployment allows it (createProviderFetch unwraps an already-guarded
-    // fetcher).
+    // Re-guard so validating a private instance baseUrl follows the deployment opt-in.
     const guardedFetcher = createProviderFetch({
       fetch: fetcher,
       allowPrivateNetwork: isPrivateNetworkAccessAllowed,

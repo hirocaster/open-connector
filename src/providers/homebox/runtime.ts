@@ -59,7 +59,6 @@ function normalizeHomeBoxBaseUrl(
   value: unknown,
   allowPrivateNetwork: boolean = isPrivateNetworkAccessAllowed(),
 ): string {
-  // Private instance targets are allowed only with the deployment opt-in.
   const raw = optionalString(value)?.trim();
   if (!raw) {
     throw new ProviderRequestError(400, "baseUrl is required");
@@ -75,9 +74,7 @@ function normalizeHomeBoxBaseUrl(
   }
 
   url.pathname = url.pathname.replace(/\/+$/, "") || "/";
-  // Users often paste the full API root (https://homebox.local/api) as the
-  // instance URL; the API root is appended below it, so drop a trailing
-  // /api/v1 or /api segment to avoid double-prefixing every request.
+  // Users often paste the API root; strip a trailing /api so it is not double-prefixed.
   url.pathname = url.pathname.replace(/\/+(api\/v1|api)$/i, "") || "/";
   return url.pathname === "/" ? url.origin : `${url.origin}${url.pathname}`;
 }
@@ -282,8 +279,7 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
           ? optionalObjectArray(current.fields, "HomeBox custom fields response")
           : optionalObjectArray(input.fields, "HomeBox custom fields input"),
     };
-    // Empty UUID strings would fail the adapter's UUID decoding, so only send
-    // ids we actually have.
+    // Empty UUID strings would fail decoding, so only send ids we have.
     const entityTypeId = optionalString(input.entityTypeId) ?? optionalString(entityType.id);
     if (entityTypeId) {
       body.entityTypeId = entityTypeId;
