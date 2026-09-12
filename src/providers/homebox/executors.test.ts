@@ -4,17 +4,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { setDefaultGuardedFetchDnsLookup } from "../../core/guarded-fetch.ts";
 import { setPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import { executors, proxy } from "./executors.ts";
-import { clearHomeBoxTokenCache } from "./runtime.ts";
 
 // Arbitrary RFC1918 literal: the tests only exercise the private-network opt-in,
 // and every fetch and DNS lookup is stubbed, so this never touches a real host.
 const lanInstanceUrl = "http://192.168.150.53:7745";
+const apiKey = "hb_static_test_key";
 
 function apiKeyCredential(): Extract<ResolvedCredential, { authType: "api_key" }> {
   return {
     authType: "api_key",
-    apiKey: "hunter2",
-    values: { username: "admin@example.com", baseUrl: lanInstanceUrl },
+    apiKey,
+    values: { baseUrl: lanInstanceUrl },
     profile: { accountId: "homebox:test", displayName: "HomeBox test", grantedScopes: [] },
     metadata: {},
   };
@@ -23,14 +23,6 @@ function apiKeyCredential(): Extract<ResolvedCredential, { authType: "api_key" }
 function executionContext(): ExecutionContext {
   const credential = apiKeyCredential();
   return { getCredential: async () => credential };
-}
-
-function loginResponse(token: string): Response {
-  return Response.json({
-    token: `Bearer ${token}`,
-    expiresAt: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
-    attachmentToken: "attachment-token",
-  });
 }
 
 interface CapturedRequest {
@@ -44,11 +36,10 @@ describe("homebox provider", () => {
   afterEach(() => {
     setDefaultGuardedFetchDnsLookup(null);
     setPrivateNetworkAccessAllowed(false);
-    clearHomeBoxTokenCache();
     vi.unstubAllGlobals();
   });
 
-  it("logs in with username/password and proxies a token-authenticated request", async () => {
+  it("proxies a request with the static API key as a bearer token", async () => {
     setPrivateNetworkAccessAllowed(true);
     setDefaultGuardedFetchDnsLookup(async (hostname) => [
       { address: hostname === "192.168.150.53" ? "192.168.150.53" : "93.184.216.34", family: 4 },
@@ -58,15 +49,7 @@ describe("homebox provider", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
       const headers = new Headers(init?.headers);
-      requests.push({
-        url: url.toString(),
-        method: init?.method ?? "GET",
-        headers,
-        body: init?.body ? String(init?.body) : undefined,
-      });
-      if (url.pathname === "/api/v1/users/login") {
-        return loginResponse("token-1");
-      }
+      requests.push({ url: url.toString(), method: init?.method ?? "GET", headers });
       if (url.pathname === "/api/v1/entities") {
         return Response.json({ page: 1, pageSize: 10, total: 1, items: [{ id: "entity-1", name: "Laptop" }] });
       }
@@ -80,51 +63,30 @@ describe("homebox provider", () => {
     }
     expect(result.response.status).toBe(200);
 
-    const loginCall = requests.find((request) => request.url.endsWith("/api/v1/users/login"))!;
-    expect(loginCall.method).toBe("POST");
-    expect(JSON.parse(loginCall.body ?? "{}")).toEqual({
-      username: "admin@example.com",
-      password: "hunter2",
-      stayLoggedIn: true,
-    });
-
     const entitiesCall = requests.find((request) => request.url.endsWith("/api/v1/entities"))!;
     expect(entitiesCall.url).toBe(`${lanInstanceUrl}/api/v1/entities`);
-    expect(entitiesCall.headers.get("authorization")).toBe("Bearer token-1");
+    expect(entitiesCall.headers.get("authorization")).toBe(`Bearer ${apiKey}`);
   });
 
-  it("re-authenticates and retries once when the cached token is rejected", async () => {
+  it("maps a rejected API key to an authorization error without retrying", async () => {
     setPrivateNetworkAccessAllowed(true);
-    setDefaultGuardedFetchDnsLookup(async (hostname) => [
-      { address: hostname === "192.168.150.53" ? "192.168.150.53" : "93.184.216.34", family: 4 },
-    ]);
+    setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
 
-    let logins = 0;
     let entityCalls = 0;
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-      if (url.pathname === "/api/v1/users/login") {
-        logins += 1;
-        return loginResponse(logins === 1 ? "expired-token" : "fresh-token");
-      }
-      if (url.pathname === "/api/v1/entities") {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL) => {
         entityCalls += 1;
-        if (entityCalls === 1) {
-          return new Response(JSON.stringify({ error: "valid authorization token is required" }), { status: 401 });
-        }
-        return Response.json({ page: 1, pageSize: 10, total: 0, items: [] });
-      }
-      return new Response("not found", { status: 404 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
+        return new Response(JSON.stringify({ error: "valid authorization token is required" }), { status: 401 });
+      }),
+    );
 
     const result = await executors["homebox.list_entities"]!({}, executionContext());
-    if (!result.ok) {
-      throw new Error(`expected executor success, got: ${result.error?.message}`);
+    if (result.ok) {
+      throw new Error("expected the API key to be rejected");
     }
-    expect(result.output).toMatchObject({ page: 1, total: 0 });
-    expect(logins).toBe(2);
-    expect(entityCalls).toBe(2);
+    expect(result.error?.code).toBe("authorization_failed");
+    expect(entityCalls).toBe(1);
   });
 
   it("rejects a LAN instance without the private-network opt-in", async () => {
@@ -187,9 +149,6 @@ describe("homebox provider", () => {
         headers,
         body: init?.body ? String(init?.body) : undefined,
       });
-      if (url.pathname === "/api/v1/users/login") {
-        return loginResponse("token-1");
-      }
       if (url.pathname === "/api/v1/entities/entity-1" && (init?.method ?? "GET") === "GET") {
         return Response.json(entity);
       }
@@ -218,29 +177,6 @@ describe("homebox provider", () => {
     expect(body.fields).toEqual(entity.fields);
   });
 
-  it("maps a failed login to an authorization error", async () => {
-    setPrivateNetworkAccessAllowed(true);
-    setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-      if (url.pathname === "/api/v1/users/login") {
-        return new Response(JSON.stringify("invalid username or password"), {
-          status: 500,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      return new Response("not found", { status: 404 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const result = await executors["homebox.get_status"]!({}, executionContext());
-    if (result.ok) {
-      throw new Error("expected login to fail");
-    }
-    expect(result.error?.code).toBe("authorization_failed");
-    expect(result.error?.message).toContain("invalid username or password");
-  });
-
   it("encodes list_entities filter parameters as repeated multi-value query params", async () => {
     setPrivateNetworkAccessAllowed(true);
     setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
@@ -250,9 +186,6 @@ describe("homebox provider", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
         requests.push({ url: url.toString(), method: init?.method ?? "GET", headers: new Headers(init?.headers) });
-        if (url.pathname === "/api/v1/users/login") {
-          return loginResponse("token-1");
-        }
         if (url.pathname === "/api/v1/entities") {
           return Response.json({ page: 1, pageSize: 10, total: 0, items: [] });
         }
@@ -295,9 +228,6 @@ describe("homebox provider", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-        if (url.pathname === "/api/v1/users/login") {
-          return loginResponse("token-1");
-        }
         if (url.pathname === "/api/v1/entities/fields") {
           return Response.json(["Color", "Serial"]);
         }
@@ -319,9 +249,6 @@ describe("homebox provider", () => {
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-        if (url.pathname === "/api/v1/users/login") {
-          return loginResponse("token-1");
-        }
         if (url.pathname === "/api/v1/entity-types") {
           return Response.json([{ id: "type-1", name: "Location", isLocation: true }]);
         }

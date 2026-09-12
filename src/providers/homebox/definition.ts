@@ -6,6 +6,12 @@ const service = "homebox";
 
 /**
  * HomeBox provider backed by a user-configured HomeBox instance.
+ *
+ * Authenticates with a static API key issued by the HomeBox web interface
+ * (Users -> API Keys). The key carries the same permissions as the issuing
+ * account, so the provider acts as that account, including its group scope:
+ * everything created through the provider is visible to the account that
+ * issued the key and its group members.
  */
 export const provider: ProviderDefinition = {
   service,
@@ -17,20 +23,11 @@ export const provider: ProviderDefinition = {
   auth: [
     {
       type: "api_key",
-      label: "Login Password",
-      placeholder: "HOMEBOX_PASSWORD",
+      label: "API Key",
+      placeholder: "HOMEBOX_API_KEY",
       description:
-        "The password of your HomeBox account. HomeBox has no API keys: the provider logs in with this password and the username below to obtain a bearer token, and re-authenticates automatically when the token expires.",
+        "A static API key issued from the HomeBox web interface under Users -> API Keys. The key has the same permissions as the issuing account, so the provider acts as that account and shares its group collection.",
       extraFields: [
-        {
-          key: "username",
-          label: "Username (Email)",
-          inputType: "text",
-          required: true,
-          secret: false,
-          placeholder: "admin@example.com",
-          description: "The email address you log in to HomeBox with. Any non-superuser account of the group works.",
-        },
         {
           key: "baseUrl",
           label: "Instance Base URL",

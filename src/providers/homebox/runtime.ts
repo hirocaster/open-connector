@@ -26,12 +26,9 @@ import {
 
 const homeBoxCredentialHelpUrl = "https://homebox.software/en/api/";
 export const homeBoxApiPrefix = "api/v1";
-const homeBoxTokenExpiryBufferMs = 60_000;
-const homeBoxTokenFallbackTtlMs = 5 * 60_000;
 
 export interface HomeBoxActionContext {
-  username: string;
-  password: string;
+  apiKey: string;
   baseUrl: string;
   transitFiles?: TransitFileStore;
   fetcher: typeof fetch;
@@ -48,30 +45,6 @@ interface HomeBoxRequestOptions {
   path: string;
   query?: Record<string, HomeBoxQueryValue>;
   body?: Record<string, unknown> | readonly unknown[] | FormData;
-}
-
-interface HomeBoxTokenEntry {
-  token: string;
-  expiresAt: number;
-}
-
-// HomeBox has no API keys: credentials are an email/password pair, and every
-// request authenticates with a bearer token obtained from /users/login. Tokens
-// are stateful DB sessions that expire after a week (or four with
-// stayLoggedIn), so cache them per credential and re-login before expiry.
-// In-flight logins are shared so concurrent cold-start requests do not
-// exhaust anything (tokens are cheap, but the cache avoids a login per call).
-const homeBoxTokenCache = new Map<string, HomeBoxTokenEntry>();
-const homeBoxLoginInFlight = new Map<string, Promise<HomeBoxTokenEntry>>();
-
-function homeBoxTokenCacheKey(context: HomeBoxActionContext): string {
-  return `${context.baseUrl}|${context.username}|${context.password}`;
-}
-
-/** Exposed for the test harness. */
-export function clearHomeBoxTokenCache(): void {
-  homeBoxTokenCache.clear();
-  homeBoxLoginInFlight.clear();
 }
 
 export function resolveHomeBoxBaseUrl(input: {
@@ -131,17 +104,11 @@ function buildHomeBoxUrl(
   return url.toString();
 }
 
-interface ExtendedHomeBoxRequestOptions extends HomeBoxRequestOptions {
-  token?: string | null;
-}
-
-async function performHomeBoxRequest(options: ExtendedHomeBoxRequestOptions): Promise<Response> {
+async function performHomeBoxRequest(options: HomeBoxRequestOptions): Promise<Response> {
   const { context } = options;
   const url = buildHomeBoxUrl(context, options.path, options.query);
   const headers = new Headers({ accept: "application/json", "user-agent": providerUserAgent });
-  if (options.token) {
-    headers.set("authorization", options.token);
-  }
+  headers.set("authorization", `Bearer ${context.apiKey}`);
 
   let body: BodyInit | undefined;
   if (options.body instanceof FormData) {
@@ -179,7 +146,6 @@ async function readHomeBoxPayload(response: Response): Promise<unknown> {
 function mapHomeBoxHttpError(status: number, payload: unknown): ProviderRequestError {
   let message: string | undefined;
   if (typeof payload === "string") {
-    // Some handlers reply with a plain JSON string, for example failed logins.
     message = payload;
   } else {
     const error = optionalRecord(payload);
@@ -188,74 +154,13 @@ function mapHomeBoxHttpError(status: number, payload: unknown): ProviderRequestE
   return new ProviderRequestError(status, message ?? `HomeBox request failed with HTTP ${status}`, payload);
 }
 
-async function authenticateHomeBox(context: HomeBoxActionContext): Promise<HomeBoxTokenEntry> {
-  const response = await performHomeBoxRequest({
-    context,
-    method: "POST",
-    path: "users/login",
-    body: { username: context.username, password: context.password, stayLoggedIn: true },
-  });
-  const payload = await readHomeBoxPayload(response);
-  if (!response.ok) {
-    // Failed logins are HTTP 500 with a plain JSON string body ("invalid
-    // username or password"), not 401; classify them as authorization errors.
-    const error = mapHomeBoxHttpError(response.status, payload);
-    if (/invalid username or password/i.test(error.message)) {
-      throw new ProviderRequestError(401, error.message, payload);
-    }
-    throw error;
-  }
-  const token = optionalString(optionalRecord(payload)?.token);
-  if (!token) {
-    throw new ProviderRequestError(502, "HomeBox login returned no token.");
-  }
-  const expiresAtIso = optionalString(optionalRecord(payload)?.expiresAt);
-  const expiresMs = expiresAtIso ? Date.parse(expiresAtIso) : Number.NaN;
-  const ttlMs = Number.isFinite(expiresMs)
-    ? Math.max(homeBoxTokenFallbackTtlMs, expiresMs - Date.now() - homeBoxTokenExpiryBufferMs)
-    : homeBoxTokenFallbackTtlMs;
-  return { token, expiresAt: Date.now() + ttlMs };
-}
-
-export async function ensureHomeBoxToken(context: HomeBoxActionContext): Promise<string> {
-  const key = homeBoxTokenCacheKey(context);
-  const cached = homeBoxTokenCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.token;
-  }
-
-  const inFlight = homeBoxLoginInFlight.get(key);
-  if (inFlight) {
-    return (await inFlight).token;
-  }
-
-  const login = authenticateHomeBox(context)
-    .then((entry) => {
-      homeBoxTokenCache.set(key, entry);
-      return entry;
-    })
-    .finally(() => {
-      homeBoxLoginInFlight.delete(key);
-    });
-  homeBoxLoginInFlight.set(key, login);
-  return (await login).token;
-}
-
 async function requestHomeBoxJson(options: HomeBoxRequestOptions): Promise<unknown> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const token = await ensureHomeBoxToken(options.context);
-    const response = await performHomeBoxRequest({ ...options, token });
-    const payload = await readHomeBoxPayload(response);
-    if (response.ok) {
-      return payload;
-    }
-    if (response.status === 401 && attempt === 0) {
-      homeBoxTokenCache.delete(homeBoxTokenCacheKey(options.context));
-      continue;
-    }
-    throw mapHomeBoxHttpError(response.status, payload);
+  const response = await performHomeBoxRequest(options);
+  const payload = await readHomeBoxPayload(response);
+  if (response.ok) {
+    return payload;
   }
-  throw new ProviderRequestError(401, "HomeBox rejected the token after re-authentication.");
+  throw mapHomeBoxHttpError(response.status, payload);
 }
 
 function readPagination(payload: Record<string, unknown>): Record<string, unknown> {
@@ -455,6 +360,14 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { statistics: payload };
   },
 
+  async accept_group_invitation(input, context) {
+    const id = requiredInputString(input.invitationId, "invitationId");
+    const payload = recordOrEmpty(
+      await requestHomeBoxJson({ context, method: "POST", path: `groups/invitations/${encodeURIComponent(id)}` }),
+    );
+    return { group: payload };
+  },
+
   async add_entity_attachment(input, context) {
     const id = requiredInputString(input.entityId, "entityId");
     const file = await readTransitFileInput(input.file, context);
@@ -517,14 +430,6 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { entry: payload };
   },
 
-  async accept_group_invitation(input, context) {
-    const id = requiredInputString(input.invitationId, "invitationId");
-    const payload = recordOrEmpty(
-      await requestHomeBoxJson({ context, method: "POST", path: `groups/invitations/${encodeURIComponent(id)}` }),
-    );
-    return { group: payload };
-  },
-
   async list_custom_field_names(_input, context) {
     const payload = await requestHomeBoxJson({ context, method: "GET", path: "entities/fields" });
     return { names: stringArray(payload, "HomeBox custom field names response") };
@@ -551,16 +456,24 @@ export async function validateHomeBoxCredential(
   fetcher: ProviderFetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const password = requiredInputString(input.apiKey, "apiKey");
-  const username = requiredInputString(input.values.username, "username");
+  const apiKey = requiredInputString(input.apiKey, "apiKey");
   const baseUrl = normalizeHomeBoxBaseUrl(input.values.baseUrl);
 
-  await authenticateHomeBox({ username, password, baseUrl, fetcher, signal });
+  // The cheapest authenticated call that proves the key works and reveals the
+  // acting account, so the connection profile names the group it writes to.
+  const payload = recordOrEmpty(
+    await requestHomeBoxJson({
+      context: { apiKey, baseUrl, fetcher, signal },
+      method: "GET",
+      path: "users/self",
+    }),
+  );
+  const displayName = optionalString(payload.name) ?? "HomeBox";
 
   return {
     profile: {
       accountId: `homebox:${baseUrl}`,
-      displayName: `HomeBox (${baseUrl})`,
+      displayName: `HomeBox (${displayName})`,
       grantedScopes: [],
     },
     grantedScopes: [],

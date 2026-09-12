@@ -4,11 +4,11 @@
  * Read-only by default; the only mutating check creates and deletes a
  * marker-prefixed entity type, so repeated runs stay clean.
  *
- * Set HOMEBOX_BASE_URL, HOMEBOX_USERNAME, and HOMEBOX_PASSWORD, then run:
+ * Create a static API key in the HomeBox web interface (Users -> API Keys),
+ * then run:
  *
  *   HOMEBOX_BASE_URL=http://homebox.local \
- *   HOMEBOX_USERNAME='admin@example.com' \
- *   HOMEBOX_PASSWORD='...' \
+ *   HOMEBOX_API_KEY='...' \
  *   node examples/homebox-live-check.ts
  */
 import { setPrivateNetworkAccessAllowed } from "../src/core/request.ts";
@@ -16,8 +16,7 @@ import { homeBoxActionHandlers } from "../src/providers/homebox/runtime.ts";
 import { createProviderFetch, ProviderRequestError } from "../src/providers/provider-runtime.ts";
 
 const baseUrl = process.env.HOMEBOX_BASE_URL?.trim();
-const username = process.env.HOMEBOX_USERNAME?.trim();
-const password = process.env.HOMEBOX_PASSWORD?.trim();
+const apiKey = process.env.HOMEBOX_API_KEY?.trim();
 
 const fetcher = createProviderFetch({ allowPrivateNetwork: () => true });
 // A HomeBox instance is commonly reachable only on the local network. In
@@ -27,8 +26,7 @@ const fetcher = createProviderFetch({ allowPrivateNetwork: () => true });
 setPrivateNetworkAccessAllowed(true);
 
 const context = {
-  username: username ?? "",
-  password: password ?? "",
+  apiKey: apiKey ?? "",
   baseUrl: baseUrl ?? "http://homebox.local",
   fetcher,
 };
@@ -58,8 +56,8 @@ async function step(label: string, fn: () => Promise<void>): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (!baseUrl || !username || !password) {
-    console.log("Skip HomeBox live check: set HOMEBOX_BASE_URL, HOMEBOX_USERNAME and HOMEBOX_PASSWORD.");
+  if (!baseUrl || !apiKey) {
+    console.log("Skip HomeBox live check: set HOMEBOX_BASE_URL and HOMEBOX_API_KEY.");
     return;
   }
 

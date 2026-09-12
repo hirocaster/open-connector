@@ -16,7 +16,6 @@ import {
   requireApiKeyCredential,
 } from "../provider-runtime.ts";
 import {
-  ensureHomeBoxToken,
   homeBoxActionHandlers,
   homeBoxApiPrefix,
   resolveHomeBoxBaseUrl,
@@ -39,8 +38,7 @@ export const executors: ProviderExecutors = defineProviderExecutors<HomeBoxActio
   async createContext(context: ExecutionContext, fetcher: typeof fetch): Promise<HomeBoxActionContext> {
     const credential = await requireApiKeyCredential(context, service);
     return {
-      username: credential.values.username,
-      password: credential.apiKey,
+      apiKey: credential.apiKey,
       baseUrl: resolveHomeBoxBaseUrl({ values: credential.values, metadata: credential.metadata }),
       transitFiles: context.transitFiles,
       fetcher,
@@ -52,25 +50,8 @@ export const executors: ProviderExecutors = defineProviderExecutors<HomeBoxActio
 export const proxy: ProviderProxyExecutor = defineProviderProxy({
   service,
   baseUrl: resolveHomeBoxApiRoot,
-  // The API authenticates with a per-login bearer token, which cannot be
-  // expressed as a static header, so the proxy attaches it during request
-  // customization.
-  auth: { type: "none" },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
   allowPrivateNetwork: isPrivateNetworkAccessAllowed,
-  async customizeRequest({ context, headers, fetcher }) {
-    const credential = await requireApiKeyCredential(context, service);
-    const token = await ensureHomeBoxToken({
-      username: credential.values.username,
-      password: credential.apiKey,
-      baseUrl: resolveHomeBoxBaseUrl({ values: credential.values, metadata: credential.metadata }),
-      fetcher,
-      signal: context.signal,
-    });
-    headers.set("authorization", token);
-    if (!headers.has("accept")) {
-      headers.set("accept", "application/json");
-    }
-  },
 });
 
 export const credentialValidators: CredentialValidators = {
