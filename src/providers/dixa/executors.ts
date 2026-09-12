@@ -1,10 +1,16 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
-import { optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { encodePathSegment, queryParams } from "../../core/request.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 const service = "dixa";
 const dixaApiBaseUrl = "https://dev.dixa.io";
@@ -43,6 +49,17 @@ export const dixaActionHandlers: ProviderActionHandlers<"dixa", DixaActionHandle
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, dixaActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: dixaApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+    headers.set("content-type", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -182,10 +199,6 @@ function buildEndUserListQuery(input: Record<string, unknown>): Record<string, s
     phone: optionalString(input.phone),
     externalId: optionalString(input.externalId),
   });
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function requiredConversationId(value: unknown): string {

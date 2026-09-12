@@ -1,11 +1,13 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
 import {
   defineProviderExecutors,
+  defineProviderProxy,
   ProviderRequestError,
+  providerResponseError,
   providerUserAgent,
   requireApiKeyCredential,
   setSearchParams,
@@ -36,7 +38,7 @@ export const axiomActionHandlers: ProviderActionHandlers<"axiom", AxiomActionHan
     });
 
     return {
-      dataset: requiredRecord(payload, "Axiom dataset response", providerPayloadError),
+      dataset: requiredRecord(payload, "Axiom dataset response", providerResponseError),
     };
   },
   async create_dataset(input, context) {
@@ -59,7 +61,7 @@ export const axiomActionHandlers: ProviderActionHandlers<"axiom", AxiomActionHan
     });
 
     return {
-      dataset: requiredRecord(payload, "Axiom create dataset response", providerPayloadError),
+      dataset: requiredRecord(payload, "Axiom create dataset response", providerResponseError),
     };
   },
   async delete_dataset(input, context) {
@@ -96,13 +98,13 @@ export const axiomActionHandlers: ProviderActionHandlers<"axiom", AxiomActionHan
       }),
       phase: "execute",
     });
-    const result = requiredRecord(payload, "Axiom APL query response", providerPayloadError);
+    const result = requiredRecord(payload, "Axiom APL query response", providerResponseError);
 
     return {
       result,
       datasetNames: readStringArray(result.datasetNames, "Axiom query datasetNames"),
       format: optionalString(result.format) ?? "",
-      status: requiredRecord(result.status, "Axiom query status", providerPayloadError),
+      status: requiredRecord(result.status, "Axiom query status", providerResponseError),
     };
   },
 };
@@ -118,6 +120,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<ApiKeyProvid
       signal: context.signal,
       transitFiles: context.transitFiles,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: axiomApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
   },
 });
 
@@ -271,10 +283,6 @@ function readStringArray(value: unknown, label: string): string[] {
     throw new ProviderRequestError(502, `${label} must be an array of strings`);
   }
   return value;
-}
-
-function providerPayloadError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }
 
 function isAbortError(error: unknown): boolean {

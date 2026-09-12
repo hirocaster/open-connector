@@ -1,5 +1,5 @@
-import { randomUUID as randomUUIDv7 } from "node:crypto";
 import { optionalNumber as asOptionalNumber, optionalString as asOptionalString } from "../../core/cast.ts";
+import { randomUUIDv7 } from "../../core/uuid-v7.ts";
 import { ProviderRequestError, providerUserAgent as connectorUserAgent } from "../provider-runtime.ts";
 
 export const walmartMarketplaceApiBaseUrl = "https://marketplace.walmartapis.com";
@@ -36,7 +36,7 @@ interface ValidationResult {
 
 export async function validateWalmartMarketplaceCredential(
   input: Record<string, string>,
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch,
 ): Promise<ValidationResult> {
   const credential = readCredential(input);
   await exchangeAccessToken(credential, fetcher, "validate");
@@ -242,7 +242,7 @@ function mapWalmartError(status: number, payload: unknown, phase: "validate" | "
     structuredError ??
     `walmart marketplace request failed with HTTP ${status}`;
   if (status === 401) {
-    return phase === "validate" ? new ProviderRequestError(400, message) : new ProviderRequestError(409, message);
+    return phase === "validate" ? new ProviderRequestError(400, message) : new ProviderRequestError(401, message);
   }
   if (status === 403) {
     return phase === "validate" ? new ProviderRequestError(400, message) : new ProviderRequestError(403, message);

@@ -9,10 +9,11 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
 
 import { Buffer } from "node:buffer";
-import { optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { optionalInteger, optionalRecord, optionalString, recordOrEmpty, requiredString } from "../../core/cast.ts";
 import {
   defineProviderProxy,
   defineProviderExecutors,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
 } from "../provider-runtime.ts";
@@ -39,7 +40,7 @@ export const bamboohrActionHandlers: ProviderActionHandlers<"bamboohr", Provider
     });
 
     return {
-      company: asRecord(raw),
+      company: recordOrEmpty(raw),
       raw,
     };
   },
@@ -67,18 +68,18 @@ export const bamboohrActionHandlers: ProviderActionHandlers<"bamboohr", Provider
         "page[before]": optionalString(input.before),
       },
     });
-    const body = asRecord(raw);
+    const body = recordOrEmpty(raw);
 
     return {
       employees: Array.isArray(body.data) ? body.data : [],
-      meta: asRecord(body.meta),
-      links: asRecord(body._links),
+      meta: recordOrEmpty(body.meta),
+      links: recordOrEmpty(body._links),
       raw,
     };
   },
 
   async get_employee(input, context) {
-    const employeeId = requiredString(input.employeeId, "employeeId", invalidInputError);
+    const employeeId = requiredString(input.employeeId, "employeeId", providerInputError);
     const raw = await requestBamboohrJson({
       context,
       path: `/api/v1/employees/${encodeURIComponent(employeeId)}`,
@@ -89,7 +90,7 @@ export const bamboohrActionHandlers: ProviderActionHandlers<"bamboohr", Provider
     });
 
     return {
-      employee: asRecord(raw),
+      employee: recordOrEmpty(raw),
       raw,
     };
   },
@@ -162,7 +163,7 @@ async function validateBamboohrCredential(
     },
     path: "/api/v1/company_information",
   });
-  const company = asRecord(raw);
+  const company = recordOrEmpty(raw);
   const label = readFirstString(company, ["displayName", "legalName", "name"]) ?? "BambooHR Account";
 
   return {
@@ -313,7 +314,7 @@ async function readBamboohrErrorMessage(response: Response): Promise<string> {
   if (text) {
     try {
       const body = JSON.parse(text) as unknown;
-      const record = asRecord(body);
+      const record = recordOrEmpty(body);
       return readFirstString(record, ["detail", "message", "error"]) ?? text;
     } catch {
       return text;
@@ -327,10 +328,6 @@ function joinFields(value: unknown): string | undefined {
   return Array.isArray(value) ? value.map((field) => String(field)).join(",") : undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return optionalRecord(value) ?? {};
-}
-
 function readFirstString(record: Record<string, unknown>, keys: string[]): string | undefined {
   for (const key of keys) {
     const value = optionalString(record[key]);
@@ -339,10 +336,6 @@ function readFirstString(record: Record<string, unknown>, keys: string[]): strin
     }
   }
   return undefined;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function isAbortError(error: unknown): boolean {

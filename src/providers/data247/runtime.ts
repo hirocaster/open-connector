@@ -6,12 +6,12 @@ import { compactObject, optionalRecord, optionalString, requiredString } from ".
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
-const data247ApiBaseUrl = "https://api.data247.com/v3.0";
-const data247DefaultRequestTimeoutMs = 30_000;
+export const data247ApiBaseUrl = "https://api.data247.com/v3.0";
 
 type Data247ApiCode = "B" | "CT" | "VP" | "DC" | "AG";
 type Data247Phase = "validate" | "execute";
@@ -57,7 +57,7 @@ export const data247ActionHandlers: ProviderActionHandlers<"data247", Data247Han
       phase: "execute",
       signal: context.signal,
       query: {
-        phone: requiredString(input.phone, "phone", badInput),
+        phone: requiredString(input.phone, "phone", providerInputError),
       },
     });
   },
@@ -69,7 +69,7 @@ export const data247ActionHandlers: ProviderActionHandlers<"data247", Data247Han
       phase: "execute",
       signal: context.signal,
       query: {
-        phone: requiredString(input.phone, "phone", badInput),
+        phone: requiredString(input.phone, "phone", providerInputError),
       },
     });
   },
@@ -81,7 +81,7 @@ export const data247ActionHandlers: ProviderActionHandlers<"data247", Data247Han
       phase: "execute",
       signal: context.signal,
       query: {
-        phone: requiredString(input.phone, "phone", badInput),
+        phone: requiredString(input.phone, "phone", providerInputError),
       },
     });
   },
@@ -93,7 +93,7 @@ export const data247ActionHandlers: ProviderActionHandlers<"data247", Data247Han
       phase: "execute",
       signal: context.signal,
       query: {
-        fname: requiredString(input.fname, "fname", badInput),
+        fname: requiredString(input.fname, "fname", providerInputError),
       },
     });
   },
@@ -149,7 +149,7 @@ async function requestData247Json(input: Data247RequestInput): Promise<unknown> 
     }
   }
 
-  const timeout = createProviderTimeout(input.signal, data247DefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   try {
     response = await input.fetcher(url, {
@@ -264,8 +264,4 @@ function readRequiredResponseString(value: unknown, fieldName: string, api: Data
     return value;
   }
   throw new ProviderRequestError(502, `Data247 api ${api} response missing ${fieldName}`);
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

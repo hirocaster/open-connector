@@ -10,17 +10,16 @@ import {
   optionalString,
   optionalStringOrNull,
   requiredRecord,
-  requiredString,
 } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
-const mediastackApiBaseUrl = "https://api.mediastack.com/v1";
-const mediastackDefaultRequestTimeoutMs = 30_000;
+export const mediastackApiBaseUrl = "https://api.mediastack.com/v1";
 
 type MediastackPhase = "validate" | "execute";
 type MediastackQueryValue = string | number | undefined;
@@ -125,7 +124,7 @@ async function searchLiveNews(input: Record<string, unknown>, context: Mediastac
 }
 
 async function requestMediastackJson(input: MediastackRequestInput): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.signal, mediastackDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
 
   try {
     const response = await input.fetcher(buildMediastackUrl(input.path, input.query, input.apiKey), {
@@ -291,8 +290,4 @@ function requiredInteger(value: unknown, fieldName: string): number {
     throw new ProviderRequestError(502, `Mediastack response is missing ${fieldName}`);
   }
   return numeric;
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

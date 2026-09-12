@@ -3,13 +3,14 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
 import type { keepaDealPriceTypes, keepaHistoryTypes, keepaMarketplaces } from "./actions.ts";
 
-import { compactObject, optionalRawString, optionalRecord, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRawString, optionalRecord, rawStringOrNull } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
   readProviderTextBody,
+  requiredInputString,
 } from "../provider-runtime.ts";
 import { keepaDealPriceTypes as dealPriceTypes, keepaHistoryTypes as historyTypes } from "./actions.ts";
 
@@ -172,7 +173,7 @@ export const keepaActionHandlers: ProviderActionHandlers<"keepa", KeepaActionHan
 
   async search_categories(input, context) {
     const marketplace = requireMarketplace(input.marketplace);
-    const term = readRequiredInputString(input.term, "term");
+    const term = requiredInputString(input.term, "term");
     validateCategorySearchTerm(term);
     const payload = await requestKeepa({
       path: "/search",
@@ -486,11 +487,11 @@ function normalizeProductSnapshot(product: Record<string, unknown>): Record<stri
   return {
     asin,
     domainId: asNullableInteger(product.domainId),
-    title: asNullableString(product.title),
-    brand: asNullableString(product.brand),
-    manufacturer: asNullableString(product.manufacturer),
-    productGroup: asNullableString(product.productGroup),
-    parentAsin: asNullableString(product.parentAsin),
+    title: rawStringOrNull(product.title),
+    brand: rawStringOrNull(product.brand),
+    manufacturer: rawStringOrNull(product.manufacturer),
+    productGroup: rawStringOrNull(product.productGroup),
+    parentAsin: rawStringOrNull(product.parentAsin),
     rootCategory: asNullableInteger(product.rootCategory),
     categories: readIntegerArray(product.categories),
     imageUrls: collectImageUrls(product),
@@ -545,8 +546,8 @@ function normalizeProductHistory(
   const csv = Array.isArray(product.csv) ? product.csv : [];
   return {
     asin: requireUpstreamString(product.asin, "product.asin"),
-    title: asNullableString(product.title),
-    brand: asNullableString(product.brand),
+    title: rawStringOrNull(product.title),
+    brand: rawStringOrNull(product.brand),
     series: keepaMetrics
       .filter((definition) => !requestedTypes || requestedTypes.has(definition.type))
       .flatMap((definition) => {
@@ -564,8 +565,63 @@ function normalizeProductHistory(
           },
         ];
       }),
+    monthlySoldHistory: normalizeValueHistory(product.monthlySoldHistory),
+    couponHistory: normalizeCouponHistory(product.couponHistory),
+    salesRankHistory: normalizeSalesRankHistory(product.salesRanks),
     raw: product,
   };
+}
+
+function normalizeValueHistory(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return normalizeHistoryPoints(value, false).map((point) => ({
+    keepaTime: point.keepaTime,
+    timestamp: point.timestamp,
+    value: point.value,
+  }));
+}
+
+function normalizeCouponHistory(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const points: Array<{
+    keepaTime: number;
+    timestamp: string;
+    oneTimeCoupon: number;
+    subscribeAndSaveCoupon: number;
+  }> = [];
+  for (let index = 0; index + 2 < value.length; index += 3) {
+    const keepaTime = value[index];
+    const oneTimeCoupon = value[index + 1];
+    const subscribeAndSaveCoupon = value[index + 2];
+    if (
+      !isValidKeepaTime(keepaTime) ||
+      typeof oneTimeCoupon !== "number" ||
+      !Number.isInteger(oneTimeCoupon) ||
+      typeof subscribeAndSaveCoupon !== "number" ||
+      !Number.isInteger(subscribeAndSaveCoupon)
+    ) {
+      continue;
+    }
+    points.push({
+      keepaTime,
+      timestamp: keepaTimeToIso(keepaTime),
+      oneTimeCoupon,
+      subscribeAndSaveCoupon,
+    });
+  }
+  return points;
+}
+
+function normalizeSalesRankHistory(value: unknown) {
+  const salesRanks = optionalRecord(value);
+  if (!salesRanks) return [];
+  return Object.entries(salesRanks)
+    .flatMap(([categoryId, history]) => {
+      const numericCategoryId = Number(categoryId);
+      if (!Number.isInteger(numericCategoryId) || numericCategoryId < 0) return [];
+      return [{ categoryId: numericCategoryId, points: normalizeValueHistory(history) }];
+    })
+    .sort((left, right) => left.categoryId - right.categoryId);
 }
 
 function normalizeHistoryPoints(
@@ -589,8 +645,7 @@ function normalizeHistoryPoints(
     const historyValue = value[index + 1];
     const shipping = includesShipping ? value[index + 2] : null;
     if (
-      typeof keepaTime !== "number" ||
-      !Number.isInteger(keepaTime) ||
+      !isValidKeepaTime(keepaTime) ||
       typeof historyValue !== "number" ||
       !Number.isInteger(historyValue) ||
       (shipping !== null && (typeof shipping !== "number" || !Number.isInteger(shipping)))
@@ -628,7 +683,7 @@ function collectImageUrls(product: Record<string, unknown>): string[] {
 function normalizeSeller(sellerId: string, raw: Record<string, unknown>): Record<string, unknown> {
   return {
     sellerId: optionalRawString(raw.sellerId) ?? sellerId,
-    sellerName: asNullableString(raw.sellerName),
+    sellerName: rawStringOrNull(raw.sellerName),
     currentRating: asNullableInteger(raw.currentRating),
     ratingCount: Array.isArray(raw.ratingCount) ? readIntegerArray(raw.ratingCount) : null,
     hasFba: typeof raw.hasFBA === "boolean" ? raw.hasFBA : null,
@@ -639,6 +694,12 @@ function normalizeSeller(sellerId: string, raw: Record<string, unknown>): Record
 
 function keepaTimeToIso(keepaTime: number): string {
   return new Date((keepaTime + keepaTimeStartMinutes) * 60_000).toISOString();
+}
+
+function isValidKeepaTime(value: unknown): value is number {
+  if (typeof value !== "number" || !Number.isInteger(value)) return false;
+  const unixMilliseconds = (value + keepaTimeStartMinutes) * 60_000;
+  return Number.isFinite(unixMilliseconds) && Math.abs(unixMilliseconds) <= 8_640_000_000_000_000;
 }
 
 function requireMarketplace(value: unknown): KeepaMarketplace {
@@ -687,10 +748,6 @@ function requireInputObject(value: unknown, fieldName: string): Record<string, u
     throw new ProviderRequestError(400, `${fieldName} must be an object`);
   }
   return object;
-}
-
-function readRequiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function requireUpstreamString(value: unknown, fieldName: string): string {
@@ -771,10 +828,6 @@ function objectMapEntries(value: unknown): Array<[string, Record<string, unknown
     const child = optionalRecord(item);
     return child ? [[key, child] as [string, Record<string, unknown>]] : [];
   });
-}
-
-function asNullableString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
 }
 
 function asNullableInteger(value: unknown): number | null {

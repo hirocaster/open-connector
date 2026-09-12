@@ -7,6 +7,7 @@ import type {
 
 import { isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import {
+  createProviderFetch,
   defineProviderExecutors,
   defineProviderProxy,
   ProviderRequestError,
@@ -19,12 +20,21 @@ interface Context {
   apiKey: string;
   baseUrl: string;
   fetcher: typeof fetch;
+  signal?: AbortSignal;
 }
 const handlers = Object.fromEntries(
   Object.entries(koboToolboxActionHandlers).map(([name, handler]) => [
     name,
     (input: Record<string, unknown>, context: Context) =>
-      handler({ apiKey: context.apiKey, input, providerMetadata: { baseUrl: context.baseUrl } }, context.fetcher),
+      handler(
+        {
+          apiKey: context.apiKey,
+          input,
+          providerMetadata: { baseUrl: context.baseUrl },
+          signal: context.signal,
+        },
+        context.fetcher,
+      ),
   ]),
 );
 
@@ -38,15 +48,18 @@ export const executors: ProviderExecutors = defineProviderExecutors<Context>({
       apiKey: credential.apiKey,
       baseUrl: normalizeKoboToolboxBaseUrl(credential.values.baseUrl ?? credential.metadata.baseUrl),
       fetcher,
+      signal: context.signal,
     };
   },
 });
 
 export const credentialValidators: CredentialValidators = {
-  async apiKey(input, context) {
+  async apiKey(input, { fetcher, signal }) {
+    const guardedFetcher = createProviderFetch({ fetch: fetcher, allowPrivateNetwork: isPrivateNetworkAccessAllowed });
     const result = await validateKoboToolboxCredential(
       { apiKey: input.apiKey, baseUrl: String(input.values.baseUrl ?? "") },
-      context.fetcher,
+      guardedFetcher,
+      signal,
     );
     return {
       profile: { accountId: result.providerAccountId ?? "kobotoolbox", displayName: result.accountLabel },

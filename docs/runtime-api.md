@@ -235,6 +235,10 @@ permissions, current connection identity, and request examples:
 curl -s http://localhost:3000/api/actions/github.get_current_user/agent.md
 ```
 
+The HTTP request examples in the guide use the runtime's public origin (`OOMOL_CONNECT_ORIGIN`, see
+[configuration.md](configuration.md)). The MCP `get_action_guide` tool returns the same guide with
+an `execute_action` example instead of HTTP requests.
+
 The Web Console also lets you copy cURL, TypeScript, and agent prompt examples for each Action.
 
 ## Transit Files
@@ -287,6 +291,12 @@ Request body:
 stored credentials local and lets the provider proxy executor apply provider-specific authentication.
 Successful responses use the standard `/v1` success envelope with `data.status`, `data.headers`, and
 `data.data`.
+
+Most proxies run under the same 30 second per-request budget as actions, covering the upstream request
+and the response body read. A provider that does not answer in time returns HTTP 500 with `errorCode`
+`provider_error` and `data.status` 504. A minority of providers ship a hand-written proxy that keeps
+whatever budget it sets for itself, and most of those set none. Use the provider's asynchronous job
+endpoints for work that legitimately takes longer.
 
 Deployment and runtime proxy access is controlled by `OOMOL_CONNECT_ALLOWED_PROXIES` and
 `OOMOL_CONNECT_BLOCKED_PROXIES`; Action policy does not affect it. Persistent runtime tokens add an

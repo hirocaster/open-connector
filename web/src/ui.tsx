@@ -21,6 +21,7 @@ import {
   KeyRound,
   Loader2,
   Monitor,
+  Store,
   Moon,
   RefreshCw,
   Sun,
@@ -33,6 +34,7 @@ import { ActionsPage } from "./actions-page";
 import { ApiError, apiGet, apiPost } from "./api";
 import oomolConnectLogoUrl from "./assets/oomol-connect-logo.png";
 import { persistLang, supportedLangs } from "./i18n";
+import { MarketplacePage } from "./marketplace-page";
 import { emptyData } from "./model";
 import { OAuthAppsPage } from "./oauth-apps-page";
 import { OverviewPage } from "./overview-page";
@@ -49,6 +51,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 const navItems = [
   { path: "/overview", labelKey: "nav.overview", icon: Home },
   { path: "/providers", labelKey: "nav.providers", icon: Cable },
+  { path: "/marketplace", labelKey: "nav.marketplace", icon: Store },
   { path: "/oauth-apps", labelKey: "nav.oauthApps", icon: Fingerprint },
   { path: "/actions", labelKey: "nav.actions", icon: TerminalSquare },
   { path: "/runs", labelKey: "nav.runs", icon: Activity },
@@ -141,7 +144,7 @@ export async function loadRuntimeData(
   unlockToken: string,
   cachedProviders?: ProviderDefinition[],
 ): Promise<RuntimeLoadResult> {
-  const authSession = await apiGet<AuthSession>("/api/auth/session", { bearerToken: unlockToken });
+  const authSession = await apiGet<AuthSession>("/api/auth/session", unlockToken);
   if (!authSession.authenticated) {
     return { authSession, data: emptyData };
   }
@@ -149,13 +152,24 @@ export async function loadRuntimeData(
   const catalogRequest =
     cachedProviders !== undefined ? Promise.resolve(cachedProviders) : apiGet<ProviderDefinition[]>("/api/providers");
 
-  const [providers, connections, oauthConfigs, runtimeTokens, runtimePolicy, runPage] = await Promise.all([
+  const [
+    providers,
+    connections,
+    oauthConfigs,
+    runtimeTokens,
+    runtimePolicy,
+    runPage,
+    marketplace,
+    providerPreferences,
+  ] = await Promise.all([
     catalogRequest,
     apiGet<ConnectionRecord[]>("/api/connections"),
     apiGet<OAuthConfig[]>("/api/oauth/configs"),
     apiGet<RuntimeTokenSummary[]>("/api/runtime-tokens"),
     apiGet<RuntimePolicyState>("/api/runtime-policy"),
     apiGet<RunLogPage>("/api/runs"),
+    apiGet<import("./model").MarketplaceState>("/api/marketplace"),
+    apiGet<import("./model").ProviderPreference[]>("/api/provider-preferences"),
   ]);
 
   return {
@@ -168,6 +182,8 @@ export async function loadRuntimeData(
       runtimePolicy,
       runs: runPage.items,
       runsNextCursor: runPage.nextCursor,
+      marketplace,
+      providerPreferences,
     },
   };
 }
@@ -401,6 +417,7 @@ function AppShell(props: {
             <Route index element={<Navigate to="/overview" replace />} />
             <Route path="/overview" element={<OverviewPage data={props.data} onRefresh={props.onRefresh} />} />
             <Route path="/providers" element={<ProvidersPage data={props.data} onRefresh={props.onRefresh} />} />
+            <Route path="/marketplace" element={<MarketplacePage data={props.data} onRefresh={props.onRefresh} />} />
             <Route
               path="/providers/:service"
               element={<ProvidersPage data={props.data} onRefresh={props.onRefresh} />}
@@ -564,6 +581,9 @@ function headingForPath(pathname: string): string {
   const section = pathname.split("/").filter(Boolean)[0];
   if (section === "providers") {
     return "providers";
+  }
+  if (section === "marketplace") {
+    return "marketplace";
   }
   if (section === "oauth-apps") {
     return "oauthApps";

@@ -130,6 +130,8 @@ export type OAuth2AuthDefinition = {
   refreshTokenUrl?: string;
   /** OAuth scopes joined with spaces into the authorization URL `scope` parameter. */
   scopes: string[];
+  /** Selectable provider-native OAuth scopes for programmatic connections. */
+  authorizationOptions?: OAuthAuthorizationOption[];
   /** Separator used when joining OAuth scopes. Defaults to a space. */
   scopeSeparator?: " " | ",";
   /** How the runtime sends client credentials to the token endpoint. */
@@ -169,6 +171,8 @@ export type OAuth2AuthDefinition = {
   };
   /** Extra static authorization URL parameters, such as Google `access_type=offline`. */
   authorizationParams?: Record<string, string>;
+  /** Provider callback query parameters forwarded to token exchange and later token refresh. */
+  tokenRequestCallbackParameters?: string[];
   /** Provider-specific OAuth authorization request field names. */
   authorizationRequestFields?: {
     clientId?: string | false;
@@ -182,6 +186,16 @@ export type OAuth2AuthDefinition = {
   /** How to register the provider OAuth app that supplies the client id and secret. */
   clientSetup?: OAuthClientSetupDefinition;
 };
+
+export interface OAuthAuthorizationOption {
+  id: string;
+  label: string;
+  description: string;
+  required: boolean;
+  defaultSelected: boolean;
+  risk: "standard" | "sensitive" | "destructive";
+  requires?: string[];
+}
 
 /**
  * Provider authentication capabilities advertised in the public catalog.
@@ -315,13 +329,7 @@ export interface TransitFileRead {
 
 export interface TransitFileStore {
   readonly maxBytes: number;
-  create(file: File): Promise<{
-    fileId: string;
-    downloadUrl: string;
-    sizeBytes: number;
-    name: string;
-    mimeType: string;
-  }>;
+  create(file: File): Promise<TransitFileUpload>;
   read(fileId: string): Promise<TransitFileRead>;
   delete(fileId: string): Promise<boolean>;
 }

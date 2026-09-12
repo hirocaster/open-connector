@@ -526,6 +526,51 @@ export const supabaseActions: ActionDefinition[] = [
     outputSchema: downloadedStorageObject,
   }),
   defineProviderAction(service, {
+    name: "upload_storage_object",
+    description: "Upload a local transit file to Supabase Storage.",
+    requiredScopes: [supabaseScopes.storageRead, supabaseScopes.secretsRead],
+    inputSchema: s.actionInput(
+      {
+        projectRef: s.string({
+          minLength: 1,
+          maxLength: 64,
+          pattern: "^[a-z0-9]+$",
+          description: "The lowercase Supabase project reference used by the project API hostname.",
+        }),
+        bucketId: s.nonEmptyString("The Storage bucket identifier."),
+        objectPath: s.nonEmptyString("The complete object path inside the bucket, without a leading slash."),
+        file: s.object(
+          "A local transit file reference to upload.",
+          {
+            fileId: s.nonEmptyString("The transit file identifier."),
+            mimeType: s.nonEmptyString("Optional MIME type override."),
+          },
+          { optional: ["mimeType"] },
+        ),
+        apiKeyId: s.nonEmptyString(
+          "An optional secret or legacy service_role API key ID. When omitted, the first revealed elevated key is used.",
+        ),
+        contentType: s.nonEmptyString("Optional Content-Type override; defaults to the transit file MIME type."),
+        upsert: s.boolean({
+          description: "When true, replace an existing object if it already exists. Defaults to false.",
+          default: false,
+        }),
+        cacheControl: s.nonEmptyString("Optional complete Cache-Control header value, for example max-age=3600."),
+      },
+      ["projectRef", "bucketId", "objectPath", "file"],
+      "Input parameters for uploading one Supabase Storage object.",
+    ),
+    outputSchema: s.actionOutput({
+      bucketId: s.nonEmptyString("The bucket that received the object."),
+      objectPath: s.nonEmptyString("The uploaded object path."),
+      fileId: s.nonEmptyString("The bucket-qualified Supabase Storage object path."),
+      name: s.nonEmptyString("The stored object name derived from objectPath."),
+      mimeType: s.nonEmptyString("The MIME type of the uploaded object."),
+      sizeBytes: s.nonNegativeInteger("The uploaded object size in bytes."),
+      etag: s.nullable(s.string("The uploaded object ETag, or null when Storage did not return it.")),
+    }),
+  }),
+  defineProviderAction(service, {
     name: "list_edge_functions",
     description: "List Edge Functions in a Supabase project.",
     requiredScopes: [supabaseScopes.edgeFunctionsRead],

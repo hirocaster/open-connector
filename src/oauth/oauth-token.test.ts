@@ -62,6 +62,30 @@ describe("OAuth token requests", () => {
     expect(String(init?.body)).toContain("code=authorization-code");
   });
 
+  it("cancels a standard authorization-code token request with its caller", async () => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) =>
+        await new Promise<Response>((_resolve, reject) => {
+          if (init?.signal?.aborted) {
+            reject(init.signal.reason);
+            return;
+          }
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+
+    const operation = requestAuthorizationCodeToken({
+      ...authorizationCodeRequest,
+      signal: controller.signal,
+    });
+    controller.abort();
+
+    await expect(operation).rejects.toThrow("OAuth token request was cancelled.");
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("keeps client_secret_basic credentials out of authorization-code and refresh bodies", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       Response.json({ access_token: "access-token", refresh_token: "refresh-token" }),

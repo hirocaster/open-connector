@@ -441,6 +441,26 @@ describe("teleporter backup and restore", () => {
     expect(uploaded.type).toBe("application/zip");
   });
 
+  it("rejects an empty exported archive", async () => {
+    const create = vi.fn();
+    const transitFiles = { maxBytes: 2 ** 20, create, read: vi.fn(), delete: vi.fn(async () => true) };
+    const { context } = createTestContext((request) => {
+      if (request.method === "POST" && request.url.pathname === "/api/auth") {
+        return sessionResponse("sid");
+      }
+      if (request.url.pathname === "/api/teleporter") {
+        return new Response(new Uint8Array(), { status: 200 });
+      }
+      return undefined;
+    });
+
+    await expect(piHoleActionHandlers.export_backup!({}, { ...context, transitFiles })).rejects.toMatchObject({
+      status: 502,
+      message: "Pi-hole returned an empty backup response.",
+    });
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("falls back to base64 data when transit storage is unavailable", async () => {
     const { context } = createTestContext((request) => {
       if (request.method === "POST" && request.url.pathname === "/api/auth") {

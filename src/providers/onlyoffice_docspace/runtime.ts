@@ -7,8 +7,6 @@ import { objectArray, optionalInteger, optionalRecord, optionalString } from "..
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
-const requestTimeoutMs = 30_000;
-
 export interface OnlyofficeContext {
   apiKey: string;
   portalUrl: string;
@@ -124,7 +122,7 @@ async function request(
 ): Promise<unknown> {
   const url = new URL(path, context.apiBaseUrl);
   for (const [key, value] of Object.entries(query)) if (value !== undefined) url.searchParams.set(key, String(value));
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   let response: Response;
   try {
     response = await context.fetcher(url, {
@@ -205,7 +203,7 @@ function mapError(status: number, payload: unknown, phase: Phase) {
     optionalString(root?.message) ??
     `ONLYOFFICE DocSpace request failed with ${status}`;
   if (phase === "validate" && (status === 401 || status === 403)) return new ProviderRequestError(400, message);
-  if (status === 401) return new ProviderRequestError(409, message);
+  if (status === 401) return new ProviderRequestError(401, message);
   if ([400, 403, 404, 409, 422].includes(status)) return new ProviderRequestError(400, message);
   if (status === 429) return new ProviderRequestError(429, message);
   return new ProviderRequestError(status >= 500 ? 502 : status, message);

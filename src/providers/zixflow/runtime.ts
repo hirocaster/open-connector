@@ -7,6 +7,7 @@ import { compactJson, encodePathSegment } from "../../core/request.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
 } from "../provider-runtime.ts";
@@ -14,7 +15,6 @@ import {
 export const zixflowApiBaseUrl = "https://api.zixflow.com/api/v1";
 
 const zixflowValidationPath = "/workspace-members";
-const zixflowDefaultRequestTimeoutMs = 30_000;
 
 type ZixflowRequestPhase = "validate" | "execute";
 type ZixflowActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
@@ -34,7 +34,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   get_collection(input, context) {
     return requestZixflowWrapped(
       context,
-      `/collections/${encodePathSegment(requiredString(input.collectionId, "collectionId", badInput))}`,
+      `/collections/${encodePathSegment(requiredString(input.collectionId, "collectionId", providerInputError))}`,
       "execute",
       "collection",
     );
@@ -42,7 +42,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   query_collection_records(input, context) {
     return requestZixflowWrapped(
       context,
-      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", badInput))}/query`,
+      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", providerInputError))}/query`,
       "execute",
       "records",
       "POST",
@@ -52,7 +52,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   get_collection_record(input, context) {
     return requestZixflowWrapped(
       context,
-      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", badInput))}/${encodePathSegment(requiredString(input.recordId, "recordId", badInput))}`,
+      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", providerInputError))}/${encodePathSegment(requiredString(input.recordId, "recordId", providerInputError))}`,
       "execute",
       "record",
     );
@@ -63,16 +63,16 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   update_collection_record(input, context) {
     return requestZixflowStatus(
       context,
-      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", badInput))}/${encodePathSegment(requiredString(input.recordId, "recordId", badInput))}`,
+      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", providerInputError))}/${encodePathSegment(requiredString(input.recordId, "recordId", providerInputError))}`,
       "execute",
       "PATCH",
-      requiredRecord(input.record, "record", badInput),
+      requiredRecord(input.record, "record", providerInputError),
     );
   },
   delete_collection_record(input, context) {
     return requestZixflowStatus(
       context,
-      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", badInput))}/${encodePathSegment(requiredString(input.recordId, "recordId", badInput))}`,
+      `/collection-records/${encodePathSegment(requiredString(input.collectionId, "collectionId", providerInputError))}/${encodePathSegment(requiredString(input.recordId, "recordId", providerInputError))}`,
       "execute",
       "DELETE",
     );
@@ -83,7 +83,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   get_list(input, context) {
     return requestZixflowWrapped(
       context,
-      `/lists/${encodePathSegment(requiredString(input.listId, "listId", badInput))}`,
+      `/lists/${encodePathSegment(requiredString(input.listId, "listId", providerInputError))}`,
       "execute",
       "list",
     );
@@ -91,7 +91,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   query_list_entries(input, context) {
     return requestZixflowWrapped(
       context,
-      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", badInput))}/query`,
+      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", providerInputError))}/query`,
       "execute",
       "entries",
       "POST",
@@ -101,7 +101,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   get_list_entry(input, context) {
     return requestZixflowWrapped(
       context,
-      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", badInput))}/${encodePathSegment(requiredString(input.entryId, "entryId", badInput))}`,
+      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", providerInputError))}/${encodePathSegment(requiredString(input.entryId, "entryId", providerInputError))}`,
       "execute",
       "entry",
     );
@@ -112,16 +112,16 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   update_list_entry(input, context) {
     return requestZixflowStatus(
       context,
-      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", badInput))}/${encodePathSegment(requiredString(input.entryId, "entryId", badInput))}`,
+      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", providerInputError))}/${encodePathSegment(requiredString(input.entryId, "entryId", providerInputError))}`,
       "execute",
       "PATCH",
-      requiredRecord(input.entry, "entry", badInput),
+      requiredRecord(input.entry, "entry", providerInputError),
     );
   },
   delete_list_entry(input, context) {
     return requestZixflowStatus(
       context,
-      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", badInput))}/${encodePathSegment(requiredString(input.entryId, "entryId", badInput))}`,
+      `/list-entries/${encodePathSegment(requiredString(input.listId, "listId", providerInputError))}/${encodePathSegment(requiredString(input.entryId, "entryId", providerInputError))}`,
       "execute",
       "DELETE",
     );
@@ -132,7 +132,7 @@ export const zixflowActionHandlers: ProviderActionHandlers<"zixflow", ZixflowAct
   get_workspace_member(input, context) {
     return requestZixflowWrapped(
       context,
-      `/workspace-members/${encodePathSegment(requiredString(input.memberId, "memberId", badInput))}`,
+      `/workspace-members/${encodePathSegment(requiredString(input.memberId, "memberId", providerInputError))}`,
       "execute",
       "member",
     );
@@ -176,10 +176,10 @@ async function createDynamicItem(
 ): Promise<Record<string, unknown>> {
   const payload = await requestZixflowRaw({
     context,
-    path: `/${family}/${encodePathSegment(requiredString(input[parentKey], parentKey, badInput))}`,
+    path: `/${family}/${encodePathSegment(requiredString(input[parentKey], parentKey, providerInputError))}`,
     phase: "execute",
     method: "POST",
-    body: requiredRecord(input[outputKey], outputKey, badInput),
+    body: requiredRecord(input[outputKey], outputKey, providerInputError),
   });
 
   const itemId = payload._id === undefined ? undefined : String(payload._id);
@@ -242,7 +242,7 @@ async function requestZixflowRaw(input: ZixflowRequestOptions): Promise<Record<s
 }
 
 async function fetchZixflow(input: ZixflowRequestOptions): Promise<Response> {
-  const timeout = createProviderTimeout(input.context.signal, zixflowDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const headers: Record<string, string> = {
       accept: "application/json",
@@ -291,7 +291,7 @@ function createZixflowError(response: Response, payload: unknown, phase: Zixflow
   const record = optionalRecord(payload);
   const message = record ? readMessage(record) : `Zixflow request failed with ${response.status}`;
   if (response.status === 401 || response.status === 403) {
-    return new ProviderRequestError(phase === "validate" ? 400 : 409, message, payload);
+    return new ProviderRequestError(phase === "validate" ? 400 : 401, message, payload);
   }
   if (response.status === 429) {
     return new ProviderRequestError(429, message, payload);
@@ -317,8 +317,4 @@ function readStatus(payload: Record<string, unknown>): boolean {
 
 function readMessage(payload: Record<string, unknown>): string {
   return typeof payload.message === "string" ? payload.message : "success";
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

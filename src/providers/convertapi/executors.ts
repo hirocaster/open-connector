@@ -1,4 +1,9 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderTransitFile } from "../provider-runtime.ts";
 
@@ -7,7 +12,9 @@ import { assertPublicHttpUrl } from "../../core/request.ts";
 import {
   createProviderTimeout,
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
   uploadProviderUrlToTransitFile,
@@ -37,6 +44,16 @@ export const convertapiActionHandlers: ProviderActionHandlers<"convertapi", Conv
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, convertapiActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: convertapiApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input): Promise<CredentialValidationResult> {
@@ -220,8 +237,4 @@ function inferConvertedFileName(record: Record<string, unknown>): string {
   const fileId = optionalString(record.FileId) ?? "convertapi-output";
   const fileExt = optionalString(record.FileExt);
   return fileExt ? `${fileId}.${fileExt}` : fileId;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

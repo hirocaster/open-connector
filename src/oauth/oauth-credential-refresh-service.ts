@@ -1,7 +1,11 @@
 import type { ResolvedCredential } from "../core/types.ts";
+import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { OAuthClientConfigService } from "./oauth-client-config-service.ts";
+import type { OAuthTokenResult } from "./oauth-token.ts";
 
 import { ConnectionError } from "../connection-service.ts";
+import { optionalRecord, stringRecord } from "../core/cast.ts";
+import { providerFetch } from "../providers/provider-runtime.ts";
 import { readOAuthClientConfigMetadata } from "./oauth-client-config-service.ts";
 import { expiresAtFromLifetime, requestRefreshToken } from "./oauth-token.ts";
 
@@ -16,9 +20,11 @@ export interface IOAuthCredentialRefresher {
  */
 export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher {
   private readonly clientConfigs: OAuthClientConfigService;
+  private readonly providerLoader?: IProviderLoader;
 
-  constructor(clientConfigs: OAuthClientConfigService) {
+  constructor(clientConfigs: OAuthClientConfigService, providerLoader?: IProviderLoader) {
     this.clientConfigs = clientConfigs;
+    this.providerLoader = providerLoader;
   }
 
   async refresh(service: string, credential: OAuthCredential): Promise<OAuthCredential> {
@@ -32,24 +38,38 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       );
     }
 
-    const requestTokenRefresh = (value: string): Promise<OAuthCredential> =>
-      requestRefreshToken({
+    const refreshToken = credential.refreshToken ?? "";
+    const createError = (message: string): ConnectionError =>
+      new ConnectionError("oauth_token_refresh_failed", message);
+    const providerOAuth = await this.providerLoader?.loadProviderOAuthRuntime?.(service);
+    let refreshed: OAuthTokenResult;
+    if (providerOAuth?.refreshAccessToken) {
+      refreshed = await providerOAuth.refreshAccessToken({
+        refreshToken,
+        clientConfig: config,
+        fetcher: providerFetch,
+        createError,
+      });
+    } else {
+      refreshed = await requestRefreshToken({
         clientId: config.clientId,
         clientSecret: config.clientSecret,
         responseEnvelope: auth.tokenResponseEnvelope,
-        refreshToken: value,
+        refreshToken,
+        extraFields: readOAuthRefreshParameters(credential.providerSecret),
         tokenRequestFields: auth.tokenRequestFields,
         tokenEndpointAuthMethod: auth.tokenEndpointAuthMethod,
         tokenRequestFormat: auth.tokenRequestFormat,
         tokenUrl: this.clientConfigs.resolveEndpointUrl(service, auth.refreshTokenUrl ?? auth.tokenUrl, config),
-        createError: (message) => new ConnectionError("oauth_token_refresh_failed", message),
+        createError,
       });
-    const refreshed = await requestTokenRefresh(credential.refreshToken ?? "");
+    }
     const expiresIn =
       refreshed.expiresAt === undefined ? credential.metadata.expires_in : refreshed.metadata.expires_in;
 
     return {
       ...refreshed,
+      authType: "oauth2",
       refreshToken: refreshed.refreshToken ?? credential.refreshToken,
       // `expires_in` is optional on a refresh response, and a credential without an
       // expiry is never treated as expired again, so the token silently stops being
@@ -68,4 +88,13 @@ export class OAuthCredentialRefreshService implements IOAuthCredentialRefresher 
       },
     };
   }
+}
+
+function readOAuthRefreshParameters(
+  providerSecret: Record<string, unknown> | undefined,
+): Record<string, string> | undefined {
+  const value = optionalRecord(providerSecret?.oauthRefreshParameters);
+  if (!value) return undefined;
+  const fields = stringRecord(value);
+  return Object.keys(fields).length > 0 ? fields : undefined;
 }

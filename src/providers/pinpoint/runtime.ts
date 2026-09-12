@@ -7,21 +7,11 @@ interface ApiKeyProviderActionInput {
   input: Record<string, unknown>;
   providerMetadata: Record<string, unknown>;
 }
-interface ProviderProxyContext {
-  providerMetadata: Record<string, unknown>;
-}
-interface ProviderProxyFetchInput {
-  fetcher: typeof fetch;
-  url: URL;
-  init?: RequestInit;
-}
 interface ValidateCredentialResult {
   providerAccountId?: string;
   accountLabel: string;
   providerMetadata: Record<string, unknown>;
 }
-
-const pinpointRequestTimeoutMs = 30_000;
 
 interface PinpointRequestInput {
   apiBaseUrl: string;
@@ -67,15 +57,6 @@ export async function executePinpointAction(
     phase: "execute",
     fetcher,
   });
-}
-
-export function resolvePinpointProxyBaseUrl(context: ProviderProxyContext): string {
-  return requireStoredPinpointApiBaseUrl(context.providerMetadata);
-}
-
-export async function fetchPinpointProxy(input: ProviderProxyFetchInput): Promise<Response> {
-  const guardedFetch = input.fetcher;
-  return guardedFetch(input.url, input.init);
 }
 
 export function normalizePinpointApiBaseUrl(value: unknown): string {
@@ -148,7 +129,7 @@ function appendQueryValue(query: URLSearchParams, name: string, value: unknown) 
 }
 
 async function requestPinpoint(input: PinpointRequestInput) {
-  const timeout = createProviderTimeout(undefined, pinpointRequestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   const guardedFetch = input.fetcher;
   const url = new URL(`${input.apiBaseUrl}${input.path}`);
   if (input.query) url.search = input.query.toString();
@@ -195,7 +176,7 @@ function requireJsonApiDocument(payload: unknown) {
 
 function createPinpointError(status: number, payload: unknown, phase: "validate" | "execute") {
   const message = extractPinpointError(payload) ?? `Pinpoint request failed with status ${status}`;
-  if (status === 401 || status === 403) return new ProviderRequestError(phase === "validate" ? 400 : 409, message);
+  if (status === 401 || status === 403) return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   if (status === 429) return new ProviderRequestError(429, message);
   if (400 <= status && status < 500) return new ProviderRequestError(400, message);
   return new ProviderRequestError(status || 502, message);

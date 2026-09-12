@@ -10,7 +10,6 @@ import {
   optionalRecord,
   optionalString,
   requiredRecord,
-  requiredString,
 } from "../../core/cast.ts";
 import {
   createProviderTimeout,
@@ -18,10 +17,10 @@ import {
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 export const vecteraApiBaseUrl = "https://www.vectera.com/api/v2";
-const requestTimeoutMs = 30_000;
 const maxResponseBytes = 10 * 1024 * 1024;
 type VecteraPhase = "validate" | "execute";
 
@@ -72,7 +71,7 @@ export const vecteraActionHandlers: ProviderActionHandlers<"vectera", ProviderRu
   async get_meeting_room(input, context) {
     const response = await requestVecteraJson({
       context,
-      path: `/meetingRooms/${encodeURIComponent(readInputString(input.meetingRoomId, "meetingRoomId"))}`,
+      path: `/meetingRooms/${encodeURIComponent(requiredInputString(input.meetingRoomId, "meetingRoomId"))}`,
       query: { include: joinStringList(input.include) },
       phase: "execute",
     });
@@ -109,7 +108,7 @@ export const vecteraActionHandlers: ProviderActionHandlers<"vectera", ProviderRu
     requireDefinedField(body, "at least one meeting room field is required");
     const response = await requestVecteraJson({
       context,
-      path: `/meetingRooms/${encodeURIComponent(readInputString(input.meetingRoomId, "meetingRoomId"))}`,
+      path: `/meetingRooms/${encodeURIComponent(requiredInputString(input.meetingRoomId, "meetingRoomId"))}`,
       method: "PUT",
       query: { include: joinStringList(input.include) },
       body,
@@ -120,7 +119,7 @@ export const vecteraActionHandlers: ProviderActionHandlers<"vectera", ProviderRu
   async get_meeting_room_settings(input, context) {
     const response = await requestVecteraJson({
       context,
-      path: `/meetingRooms/${encodeURIComponent(readInputString(input.meetingRoomId, "meetingRoomId"))}/settings`,
+      path: `/meetingRooms/${encodeURIComponent(requiredInputString(input.meetingRoomId, "meetingRoomId"))}/settings`,
       phase: "execute",
     });
     return { settings: readObjectPayload(response.payload, "meeting room settings") };
@@ -134,7 +133,7 @@ export const vecteraActionHandlers: ProviderActionHandlers<"vectera", ProviderRu
     requireDefinedField(body, "at least one meeting room setting is required");
     const response = await requestVecteraJson({
       context,
-      path: `/meetingRooms/${encodeURIComponent(readInputString(input.meetingRoomId, "meetingRoomId"))}/settings`,
+      path: `/meetingRooms/${encodeURIComponent(requiredInputString(input.meetingRoomId, "meetingRoomId"))}/settings`,
       method: "PUT",
       body,
       phase: "execute",
@@ -150,7 +149,7 @@ export const vecteraActionHandlers: ProviderActionHandlers<"vectera", ProviderRu
       path: "/permissions",
       method: "POST",
       body: compactObject({
-        meetingRoomId: readInputString(input.meetingRoomId, "meetingRoomId"),
+        meetingRoomId: requiredInputString(input.meetingRoomId, "meetingRoomId"),
         accessLevel: optionalString(input.accessLevel),
         email: optionalString(input.email),
         userId: optionalString(input.userId),
@@ -197,7 +196,7 @@ async function requestVecteraJson(input: VecteraRequestInput): Promise<VecteraJs
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value != null) url.searchParams.set(key, String(value));
   }
-  const timeout = createProviderTimeout(input.context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const headers = new Headers({
       accept: "application/json",
@@ -268,10 +267,6 @@ function extractVecteraErrorMessage(payload: unknown): string | undefined {
 
 function readObjectPayload(payload: unknown, label: string): Record<string, unknown> {
   return requiredRecord(payload, label, () => providerError(`${label} response`));
-}
-
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function requireDefinedField(input: Record<string, unknown>, message: string): void {

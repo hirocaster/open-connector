@@ -11,7 +11,6 @@ import {
 
 const service = "daytona";
 const daytonaApiBaseUrl = "https://app.daytona.io/api";
-const requestTimeoutMs = 30_000;
 type RequestPhase = "validate" | "execute";
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(
@@ -129,7 +128,7 @@ async function requestDaytona(input: {
     if (Array.isArray(value)) value.forEach((item) => url.searchParams.append(name, String(item)));
     else url.searchParams.set(name, String(value));
   }
-  const timeout = createProviderTimeout(undefined, requestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await input.fetcher(url, {
       method: input.method ?? "GET",
@@ -177,7 +176,7 @@ function mapError(response: Response, payload: unknown, phase: RequestPhase) {
   if (response.status === 429) return new ProviderRequestError(429, message);
   if (phase === "validate" && response.status >= 400 && response.status < 500)
     return new ProviderRequestError(400, message);
-  if (response.status === 401 || response.status === 403) return new ProviderRequestError(409, message);
+  if (response.status === 401 || response.status === 403) return new ProviderRequestError(401, message);
   if (response.status >= 400 && response.status < 500) return new ProviderRequestError(400, message);
   return new ProviderRequestError(response.status || 500, message);
 }

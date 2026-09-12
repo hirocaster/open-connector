@@ -1,9 +1,15 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
-import { optionalBoolean, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 const service = "getform";
 const getformSubmitBaseUrl = "https://forminit.com";
@@ -33,6 +39,16 @@ export const getformActionHandlers: ProviderActionHandlers<"getform", GetformAct
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, getformActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: `${getformApiOrigin}${getformApiBasePath}`,
+  auth: { type: "api_key_header", name: "x-api-key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input) {
     if (!input.apiKey.trim()) {
@@ -58,7 +74,7 @@ async function submitForm(input: Record<string, unknown>, context: GetformAction
   assertNoFileBlocks(input.blocks);
 
   return requestGetform(
-    new URL(`/f/${encodeURIComponent(readInputString(input.formId, "formId"))}`, getformSubmitBaseUrl),
+    new URL(`/f/${encodeURIComponent(requiredInputString(input.formId, "formId"))}`, getformSubmitBaseUrl),
     {
       method: "POST",
       headers: getformHeaders(context.apiKey, {
@@ -74,7 +90,7 @@ async function submitForm(input: Record<string, unknown>, context: GetformAction
 }
 
 async function listSubmissions(input: Record<string, unknown>, context: GetformActionContext): Promise<unknown> {
-  const formId = readInputString(input.formId, "formId");
+  const formId = requiredInputString(input.formId, "formId");
   const url = new URL(`${getformApiBasePath}/forms/${encodeURIComponent(formId)}`, getformApiOrigin);
 
   const page = optionalInteger(input.page);
@@ -247,8 +263,4 @@ function getformHeaders(apiKey: string, extraHeaders?: HeadersInit): Headers {
   headers.set("user-agent", providerUserAgent);
   headers.set("x-api-key", apiKey);
   return headers;
-}
-
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

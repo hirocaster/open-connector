@@ -10,9 +10,14 @@ import {
   optionalString,
   optionalStringOrNull,
   positiveInteger,
-  requiredString,
 } from "../../core/cast.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  ProviderRequestError,
+  providerResponseError,
+  providerUserAgent,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 export const autotaskZoneInformationBaseUrl = "https://webservices.autotask.net/atservicesrest";
 
@@ -106,7 +111,7 @@ async function getAutotaskZoneInformation(
 ): Promise<AutotaskZoneInformation> {
   const payload = await requestAutotaskZoneInformation(username, fetcher, signal);
   const record = requireObjectPayload(payload, "Autotask zone information");
-  const apiBaseUrl = normalizeAutotaskApiBaseUrl(readRequiredString(record.url, "url"));
+  const apiBaseUrl = normalizeAutotaskApiBaseUrl(requiredInputString(record.url, "url"));
 
   return {
     apiBaseUrl,
@@ -147,7 +152,7 @@ async function getAutotaskRecord(
   context: AutotaskActionContext,
 ): Promise<Record<string, unknown>> {
   const entity = readAutotaskEntity(input.entity);
-  const id = positiveInteger(input.id, "id", requestInputError);
+  const id = positiveInteger(input.id, "id", providerInputError);
   const payload = await requestAutotaskJson({
     apiBaseUrl: context.apiBaseUrl,
     path: `${entity}/${id}`,
@@ -381,11 +386,7 @@ function readOptionalStringArray(value: unknown, fieldName: string): string[] | 
   if (!Array.isArray(value)) {
     throw new ProviderRequestError(400, `${fieldName} must be an array`);
   }
-  return value.map((item) => readRequiredString(item, fieldName));
-}
-
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, requestInputError);
+  return value.map((item) => requiredInputString(item, fieldName));
 }
 
 function requireObjectPayload(value: unknown, label: string): Record<string, unknown> {
@@ -395,6 +396,3 @@ function requireObjectPayload(value: unknown, label: string): Record<string, unk
   }
   return record;
 }
-
-const requestInputError = (message: string): ProviderRequestError => new ProviderRequestError(400, message);
-const providerResponseError = (message: string): ProviderRequestError => new ProviderRequestError(502, message);

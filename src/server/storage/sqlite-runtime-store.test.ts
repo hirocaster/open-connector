@@ -1,12 +1,14 @@
 import type { RuntimeActionHttpResult } from "../api/runtime-api.ts";
 
 import { readFileSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AesGcmSecretCodec } from "../secrets/secret-codec.ts";
+import { connectionRequestStoreTests } from "./connection-request-store.cases.ts";
+import { createDirectoryMigrationSource } from "./migration-source.ts";
 import { RuntimeTokenService } from "./runtime-token-service.ts";
 import { SqliteRunLogStore, SqliteRuntimeDatabase } from "./sqlite-runtime-store.ts";
 
@@ -50,6 +52,8 @@ describe("SqliteRuntimeDatabase", () => {
       "0009_runtime_token_proxy.sql",
       "0010_connection_revision.sql",
       "0011_runtime_token_connection_scope.sql",
+      "0012_marketplace.sql",
+      "0013_connection_requests.sql",
     ];
     expect(entries.filter((entry) => entry.message === "sqlite migration started")).toEqual(
       migrations.map((migration) => ({ fields: { migration }, message: "sqlite migration started" })),
@@ -157,6 +161,26 @@ describe("SqliteRuntimeDatabase", () => {
       ],
     });
     second.close();
+  });
+
+  it("deletes OAuth states created before a cutoff", async () => {
+    const database = new SqliteRuntimeDatabase(await createDatabasePath());
+    await database.oauthStateStore.set({
+      service: "gmail",
+      state: "expired",
+      createdAt: "2026-06-30T00:00:00.000Z",
+    });
+    await database.oauthStateStore.set({
+      service: "gmail",
+      state: "current",
+      createdAt: "2026-06-30T00:00:01.000Z",
+    });
+
+    await database.oauthStateStore.deleteCreatedBefore("2026-06-30T00:00:01.000Z");
+
+    await expect(database.oauthStateStore.take("expired")).resolves.toBeUndefined();
+    await expect(database.oauthStateStore.take("current")).resolves.toMatchObject({ state: "current" });
+    database.close();
   });
 
   it("preserves connection identity and rejects stale credential revisions", async () => {
@@ -436,6 +460,31 @@ describe("SqliteRuntimeDatabase", () => {
     await expect(database.runLogStore.get("run-match")).resolves.toEqual(match);
     await expect(database.runLogStore.get("missing")).resolves.toBeUndefined();
     database.close();
+  });
+
+  it("applies migrations from a custom migration source", async () => {
+    const databasePath = await createDatabasePath();
+    const migrationDirectory = join(dirname(databasePath), "migrations");
+    await mkdir(migrationDirectory);
+    await writeFile(
+      join(migrationDirectory, "0001_custom.sql"),
+      "create table custom_records (id integer primary key);",
+    );
+
+    const database = new SqliteRuntimeDatabase(databasePath, {
+      migrations: createDirectoryMigrationSource(migrationDirectory),
+    });
+    database.close();
+
+    const inspected = new DatabaseSync(databasePath);
+    expect(inspected.prepare("select name from runtime_migrations order by name").all()).toEqual([
+      { name: "0001_custom.sql" },
+    ]);
+    expect(
+      inspected.prepare("select name from sqlite_master where type = 'table' and name = 'custom_records'").get(),
+    ).toEqual({ name: "custom_records" });
+    expect(inspected.prepare("select name from sqlite_master where name = 'connections'").get()).toBeUndefined();
+    inspected.close();
   });
 
   it("keeps an inserted run when retention cleanup fails", async () => {
@@ -938,3 +987,91 @@ async function expectDatabaseDirectoryNotToContain(databasePath: string, needle:
     expect(bytes).not.toContain(needle);
   }
 }
+
+describe("SQLite connection requests", () => {
+  let database: SqliteRuntimeDatabase;
+  beforeEach(() => {
+    database = new SqliteRuntimeDatabase(":memory:");
+  });
+  afterEach(() => {
+    database.close();
+  });
+  connectionRequestStoreTests(() => database);
+});
+
+it("rolls back credential writes when the request success update fails and recovers after restart", async () => {
+  const databasePath = await createDatabasePath();
+  const codec = new AesGcmSecretCodec("request-secret-key");
+  let database = new SqliteRuntimeDatabase(databasePath, { secretCodec: codec });
+  const inspect = new DatabaseSync(databasePath);
+  const request = {
+    connectionRequestId: "request",
+    state: "state",
+    owner: "admin",
+    service: "github",
+    connectionName: "new",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    clientConfig: { service: "github", clientId: "id", clientSecret: "client-secret", extra: {}, secretExtra: {} },
+  };
+  try {
+    await database.connectionRequestStore.create(request);
+    expect(inspect.prepare("select value from connection_requests").get()?.value).not.toContain("client-secret");
+    database.close();
+    database = new SqliteRuntimeDatabase(databasePath, { secretCodec: codec });
+    expect(await database.connectionRequestStore.claim("state")).toEqual(request);
+    inspect.exec(
+      "create trigger fail_request_success before update of status on connection_requests when new.status = 'connected' begin select raise(abort, 'injected failure'); end",
+    );
+    const credential = {
+      authType: "api_key" as const,
+      apiKey: "key",
+      values: { apiKey: "key" },
+      profile: githubProfile,
+      metadata: {},
+    };
+    await expect(database.connectionRequestStore.complete(request, credential)).rejects.toThrow("injected failure");
+    expect(await database.connectionStore.list()).toEqual([]);
+    expect(await database.connectionRequestStore.get("request", "admin")).toMatchObject({
+      status: "initiated",
+      appId: null,
+    });
+    inspect.exec("drop trigger fail_request_success");
+    await database.connectionRequestStore.complete(request, credential);
+    const result = await database.connectionRequestStore.get("request", "admin");
+    database.close();
+    database = new SqliteRuntimeDatabase(databasePath, { secretCodec: codec });
+    expect(await database.connectionRequestStore.get("request", "admin")).toEqual(result);
+    expect(result?.status).toBe("connected");
+    expect(inspect.prepare("select value from connection_requests").get()?.value).toBeNull();
+  } finally {
+    inspect.close();
+    database.close();
+  }
+});
+
+it("rotates pending connection-request secrets together with the runtime credentials", async () => {
+  const path = await createDatabasePath();
+  const oldCodec = new AesGcmSecretCodec("old-request-key");
+  const newCodec = new AesGcmSecretCodec("new-request-key");
+  const database = new SqliteRuntimeDatabase(path, { secretCodec: oldCodec });
+  const request = {
+    connectionRequestId: "rotate",
+    state: "rotate-state",
+    owner: "admin",
+    service: "github",
+    connectionName: "new",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    clientConfig: { service: "github", clientId: "client", clientSecret: "secret", extra: {}, secretExtra: {} },
+  };
+  await database.connectionRequestStore.create(request);
+  await database.rotateSecretCodec(newCodec);
+  database.close();
+  const reopened = new SqliteRuntimeDatabase(path, { secretCodec: newCodec });
+  try {
+    expect(await reopened.connectionRequestStore.claim(request.state)).toEqual(request);
+  } finally {
+    reopened.close();
+  }
+});

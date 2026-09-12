@@ -1,12 +1,6 @@
 import { optionalRecord as asOptionalObject, optionalString as asOptionalString } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-class ConnectorError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number, cause?: unknown) {
-    super(status, message, cause);
-  }
-}
-
 export const webexApiBaseUrl = "https://webexapis.com/v1";
 
 type RequestDescriptor = {
@@ -144,7 +138,7 @@ async function executeWebexAction(
 ) {
   const descriptor = requestDescriptors[actionName];
   if (!descriptor) {
-    throw new ConnectorError("invalid_input", `unknown webex action: ${actionName}`, 400);
+    throw new ProviderRequestError(400, `unknown webex action: ${actionName}`);
   }
 
   const path = interpolatePath(descriptor.path, descriptor.pathFields ?? [], actionInput);
@@ -164,10 +158,9 @@ async function executeWebexAction(
       ...(descriptor.bodyFields ? { body: JSON.stringify(body) } : {}),
     });
   } catch (error) {
-    throw new ConnectorError(
-      "provider_error",
-      error instanceof Error ? `Webex request failed: ${error.message}` : "Webex request failed",
+    throw new ProviderRequestError(
       502,
+      error instanceof Error ? `Webex request failed: ${error.message}` : "Webex request failed",
     );
   }
 
@@ -291,11 +284,11 @@ async function parseWebexJson(response: Response) {
   try {
     payload = await response.json();
   } catch {
-    throw new ConnectorError("provider_error", "Webex returned an invalid JSON response", 502);
+    throw new ProviderRequestError(502, "Webex returned an invalid JSON response");
   }
   const record = asOptionalObject(payload);
   if (!record) {
-    throw new ConnectorError("provider_error", "Webex returned an invalid response object", 502);
+    throw new ProviderRequestError(502, "Webex returned an invalid response object");
   }
   return record;
 }
@@ -305,25 +298,25 @@ async function mapWebexError(response: Response) {
   try {
     payload = asOptionalObject(await response.json()) ?? {};
   } catch {
-    // Webex 的部分错误响应没有 JSON body，保留 HTTP 状态映射。
+    // Some Webex error responses have no JSON body, so preserve the HTTP status mapping.
   }
   const message =
     asOptionalString(payload.message) ??
     asOptionalString(payload.error) ??
     `Webex request failed with HTTP ${response.status}`;
   if (response.status === 401) {
-    return new ConnectorError("credential_expired", message, 401);
+    return new ProviderRequestError(401, message);
   }
   if (response.status === 403) {
-    return new ConnectorError("scope_missing", message, 403);
+    return new ProviderRequestError(403, message);
   }
   if (response.status === 404) {
-    return new ConnectorError("invalid_input", message, 400);
+    return new ProviderRequestError(400, message);
   }
   if (response.status === 423 || response.status === 429 || response.status >= 500) {
-    return new ConnectorError("provider_error", message, response.status === 429 ? 429 : 502);
+    return new ProviderRequestError(response.status === 429 ? 429 : 502, message);
   }
-  return new ConnectorError("invalid_input", message, 400);
+  return new ProviderRequestError(400, message);
 }
 
 function readNextPageUrl(link: string | null) {
@@ -349,7 +342,7 @@ function readNextPageUrl(link: string | null) {
 
 function requireString(value: unknown, field: string) {
   if (typeof value !== "string" || value.length === 0) {
-    throw new ConnectorError("invalid_input", `${field} is required`, 400);
+    throw new ProviderRequestError(400, `${field} is required`);
   }
   return value;
 }

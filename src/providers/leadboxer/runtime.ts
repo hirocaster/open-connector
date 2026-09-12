@@ -1,4 +1,4 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-runtime.ts";
 
 import { isIP } from "node:net";
 import { domainToASCII } from "node:url";
@@ -8,6 +8,7 @@ import {
   getProviderActionHandler,
   ProviderRequestError,
   providerUserAgent,
+  requiredResponseRecord,
 } from "../provider-runtime.ts";
 
 export interface LeadboxerCredentialCheck {
@@ -17,21 +18,12 @@ export interface LeadboxerCredentialCheck {
   providerMetadata: Record<string, unknown>;
 }
 
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
-}
-
 type LeadboxerRequestPhase = "validate" | "execute";
-type LeadboxerActionHandler = (input: ApiKeyProviderActionInput, fetcher: typeof fetch) => Promise<unknown>;
+type LeadboxerActionHandler = (input: ApiKeyActionRequest, fetcher: typeof fetch) => Promise<unknown>;
 
 export const leadboxerApiBaseUrl = "https://api.leadboxer.com";
 
 const leadboxerValidationEndpoint = "/v1/management/credits";
-const leadboxerRequestTimeoutMs = 30_000;
 
 const leadboxerActionHandlers: ProviderActionHandlers<"leadboxer", LeadboxerActionHandler> = {
   lookup_ip(input, fetcher) {
@@ -52,7 +44,7 @@ export async function validateLeadboxerCredential(
     fetcher,
     phase: "validate",
   });
-  const body = requireRecord(payload, "LeadBoxer credit grants response");
+  const body = requiredResponseRecord(payload, "LeadBoxer credit grants response");
   if (!Array.isArray(body.data)) {
     throw new ProviderRequestError(502, "LeadBoxer credit grants response data must be an array");
   }
@@ -68,10 +60,7 @@ export async function validateLeadboxerCredential(
   };
 }
 
-export async function executeLeadboxerAction(
-  input: ApiKeyProviderActionInput,
-  fetcher: typeof fetch,
-): Promise<unknown> {
+export async function executeLeadboxerAction(input: ApiKeyActionRequest, fetcher: typeof fetch): Promise<unknown> {
   const handler = getProviderActionHandler(leadboxerActionHandlers, input.actionName);
   if (!handler) {
     throw new ProviderRequestError(500, `LeadBoxer action is not implemented yet: ${input.actionName}`);
@@ -96,7 +85,7 @@ export async function requestLeadboxerJson(input: {
   fetcher: typeof fetch;
   phase: LeadboxerRequestPhase;
 }): Promise<unknown> {
-  const timeoutHandle = createProviderTimeout(undefined, leadboxerRequestTimeoutMs);
+  const timeoutHandle = createProviderTimeout(undefined);
 
   try {
     const response = await input.fetcher(buildLeadboxerUrl(input.path, input.query), {
@@ -134,7 +123,7 @@ export async function requestLeadboxerJson(input: {
 }
 
 async function executeLookup(
-  input: ApiKeyProviderActionInput,
+  input: ApiKeyActionRequest,
   fetcher: typeof fetch,
   path: string,
   lookupField: "ip" | "domain",
@@ -151,7 +140,7 @@ async function executeLookup(
     phase: "execute",
   });
 
-  return requireRecord(payload, `LeadBoxer ${lookupField} lookup response`);
+  return requiredResponseRecord(payload, `LeadBoxer ${lookupField} lookup response`);
 }
 
 function normalizeLookupValue(value: unknown, field: "ip" | "domain"): string {
@@ -226,7 +215,7 @@ function createLeadboxerError(response: Response, payload: unknown, phase: Leadb
   }
 
   if (phase === "execute" && response.status === 401) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
 
   if (phase === "execute" && response.status === 403) {
@@ -270,14 +259,6 @@ function extractLeadboxerErrorMessage(payload: unknown) {
   }
 
   return undefined;
-}
-
-function requireRecord(value: unknown, label: string) {
-  const record = optionalRecord(value);
-  if (!record) {
-    throw new ProviderRequestError(502, `${label} must be an object`);
-  }
-  return record;
 }
 
 function requireString(value: unknown, fieldName: string) {

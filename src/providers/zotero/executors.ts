@@ -1,11 +1,18 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { randomUUID } from "node:crypto";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { optionalRawString } from "../../core/cast.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const service = "zotero";
 const baseUrl = "https://api.zotero.org";
+const apiVersion = "3";
 interface Context extends ApiKeyProviderContext {
   userId?: number;
 }
@@ -92,14 +99,14 @@ const handlers = {
       {
         query: {
           ...pagination(input),
-          q: scalar(input.q),
-          qmode: scalar(input.qmode),
-          itemType: scalar(input.itemType),
-          tag: scalar(input.tag),
+          q: optionalRawString(input.q),
+          qmode: optionalRawString(input.qmode),
+          itemType: optionalRawString(input.itemType),
+          tag: optionalRawString(input.tag),
           since: input.since as number | undefined,
           includeTrashed: typeof input.includeTrashed === "boolean" ? Number(input.includeTrashed) : undefined,
-          sort: scalar(input.sort),
-          direction: scalar(input.direction),
+          sort: optionalRawString(input.sort),
+          direction: optionalRawString(input.direction),
         },
       },
       context,
@@ -150,16 +157,26 @@ const handlers = {
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, handlers, {
   skipDnsValidation: true,
 });
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl,
+  auth: { type: "api_key_header", name: "Zotero-API-Key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("zotero-api-version")) headers.set("zotero-api-version", apiVersion);
+  },
+});
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const result = await request("/keys/current", {}, { apiKey: input.apiKey, fetcher, signal });
     const identity = record(result.payload, "key identity");
     const userId = positiveInteger(identity.userID, "userID");
-    const username = scalar(identity.username);
+    const username = optionalRawString(identity.username);
     return {
       profile: { accountId: String(userId), displayName: username ?? `Zotero user ${userId}` },
       grantedScopes: [],
-      metadata: { apiBaseUrl: baseUrl, apiVersion: "3", userId, username, access: identity.access },
+      metadata: { apiBaseUrl: baseUrl, apiVersion, userId, username, access: identity.access },
     };
   },
 };
@@ -182,7 +199,7 @@ async function request(
     accept: "application/json",
     "user-agent": providerUserAgent,
     "zotero-api-key": context.apiKey,
-    "zotero-api-version": "3",
+    "zotero-api-version": apiVersion,
   });
   if (options.body !== undefined) headers.set("content-type", "application/json");
   if (options.version !== undefined) headers.set("if-unmodified-since-version", String(options.version));
@@ -240,14 +257,15 @@ function successful(payload: unknown, label: string): Record<string, unknown> {
   const response = record(payload, `${label} write response`);
   const failed = optionalRecord(response.failed);
   const failure = optionalRecord(failed?.["0"]);
-  if (failure) throw new ProviderRequestError(400, scalar(failure.message) ?? `Zotero failed to create ${label}`);
+  if (failure)
+    throw new ProviderRequestError(400, optionalRawString(failure.message) ?? `Zotero failed to create ${label}`);
   return record(record(response.successful, "successful writes")["0"], `created ${label}`);
 }
 function zoteroError(status: number, payload: unknown): ProviderRequestError {
   const message =
     typeof payload === "string"
       ? payload
-      : (scalar(optionalRecord(payload)?.message) ?? `Zotero request failed with status ${status}`);
+      : (optionalRawString(optionalRecord(payload)?.message) ?? `Zotero request failed with status ${status}`);
   return new ProviderRequestError(
     status === 429 ? 429 : status === 401 || status === 403 ? 401 : status < 500 ? 400 : 502,
     message,
@@ -305,7 +323,4 @@ function optionalRecord(value: unknown): Record<string, unknown> | undefined {
 function array(value: unknown, name: string): unknown[] {
   if (!Array.isArray(value)) throw new ProviderRequestError(502, `Zotero ${name} is not an array`);
   return value;
-}
-function scalar(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
 }

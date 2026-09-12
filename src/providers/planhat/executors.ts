@@ -21,7 +21,6 @@ import {
 
 const service = "planhat";
 const apiBaseUrl = "https://api.planhat.com";
-const requestTimeoutMs = 30_000;
 const maxResponseBytes = 10 * 1024 * 1024;
 
 type PlanhatPhase = "validate" | "execute";
@@ -50,7 +49,7 @@ export const planhatActionHandlers: ProviderActionHandlers<"planhat", PlanhatAct
     );
   },
   async update_company(input, context) {
-    const companyId = requiredString(input.companyId, "companyId", providerInputError);
+    const companyId = requiredString(input.companyId, "companyId", planhatInputError);
     return normalizeCompanyResult(
       await requestPlanhatJson({
         method: "PUT",
@@ -62,7 +61,7 @@ export const planhatActionHandlers: ProviderActionHandlers<"planhat", PlanhatAct
     );
   },
   async get_company(input, context) {
-    const companyId = requiredString(input.companyId, "companyId", providerInputError);
+    const companyId = requiredString(input.companyId, "companyId", planhatInputError);
     return normalizeCompanyResult(
       await requestPlanhatJson({
         method: "GET",
@@ -97,7 +96,7 @@ export const planhatActionHandlers: ProviderActionHandlers<"planhat", PlanhatAct
     );
   },
   async update_enduser(input, context) {
-    const enduserId = requiredString(input.enduserId, "enduserId", providerInputError);
+    const enduserId = requiredString(input.enduserId, "enduserId", planhatInputError);
     return normalizeEnduserResult(
       await requestPlanhatJson({
         method: "PUT",
@@ -109,7 +108,7 @@ export const planhatActionHandlers: ProviderActionHandlers<"planhat", PlanhatAct
     );
   },
   async get_enduser(input, context) {
-    const enduserId = requiredString(input.enduserId, "enduserId", providerInputError);
+    const enduserId = requiredString(input.enduserId, "enduserId", planhatInputError);
     return normalizeEnduserResult(
       await requestPlanhatJson({
         method: "GET",
@@ -179,7 +178,7 @@ async function requestPlanhatJson(request: PlanhatRequest): Promise<unknown> {
       url.searchParams.set(key, String(value));
     }
   }
-  const timeout = createProviderTimeout(request.context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(request.context.signal);
   try {
     const response = await request.context.fetcher(url, {
       method: request.method,
@@ -378,6 +377,6 @@ function extractErrorMessage(payload: unknown): string | undefined {
   return undefined;
 }
 
-function providerInputError(message: string): ProviderRequestError {
+function planhatInputError(message: string): ProviderRequestError {
   return new ProviderRequestError(400, message.endsWith(".") ? message.slice(0, -1) : message);
 }

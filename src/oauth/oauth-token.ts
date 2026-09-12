@@ -1,15 +1,52 @@
-import type { OAuth2AuthDefinition, ResolvedCredential } from "../core/types.ts";
+import type { OAuth2AuthDefinition } from "../core/types.ts";
+import type { OAuthClientConfig } from "./oauth-client-config-service.ts";
 
 import { optionalRecord, optionalString, requiredString } from "../core/cast.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
-import { providerFetch, providerUserAgent } from "../providers/provider-runtime.ts";
+import {
+  createProviderTimeout,
+  isAbortLikeError,
+  providerFetch,
+  providerUserAgent,
+} from "../providers/provider-runtime.ts";
 
-const oauthTokenRequestTimeoutMs = 30_000;
 const oauthTokenResponseMaxBytes = 1024 * 1024;
 /** Longest `expires_in` we accept; anything larger overflows the ECMAScript `Date` range. */
 const maxExpiresInSeconds = 100 * 365 * 24 * 60 * 60;
 
 class OAuthTokenResponseSizeError extends Error {}
+
+/** Normalized provider token data returned to the shared OAuth lifecycle. */
+export interface OAuthTokenResult {
+  accessToken: string;
+  refreshToken?: string;
+  tokenType: string;
+  expiresAt?: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface OAuthCodeExchangeInput {
+  code: string;
+  clientConfig: OAuthClientConfig;
+  redirectUri: string;
+  tokenUrl: string;
+  fetcher: typeof fetch;
+  signal?: AbortSignal;
+  createError(message: string): Error;
+}
+
+export interface OAuthAccessTokenRefreshInput {
+  refreshToken: string;
+  clientConfig: OAuthClientConfig;
+  fetcher: typeof fetch;
+  createError(message: string): Error;
+}
+
+/** Provider-local overrides for token protocols that do not follow the standard OAuth request shape. */
+export interface ProviderOAuthRuntime {
+  exchangeCode?(input: OAuthCodeExchangeInput): Promise<OAuthTokenResult>;
+  refreshAccessToken?(input: OAuthAccessTokenRefreshInput): Promise<OAuthTokenResult>;
+}
 
 export interface OAuthTokenRequestOptions {
   clientId: string;
@@ -19,6 +56,7 @@ export interface OAuthTokenRequestOptions {
   tokenEndpointAuthMethod: "client_secret_basic" | "client_secret_post" | "none";
   tokenRequestFormat?: "form" | "json";
   tokenUrl: string;
+  signal?: AbortSignal;
 }
 
 interface AuthorizationCodeTokenRequest extends OAuthTokenRequestOptions {
@@ -31,6 +69,7 @@ interface AuthorizationCodeTokenRequest extends OAuthTokenRequestOptions {
 
 interface RefreshTokenRequest extends OAuthTokenRequestOptions {
   refreshToken: string;
+  extraFields?: Record<string, string>;
   createError: OAuthTokenErrorFactory;
 }
 
@@ -41,25 +80,21 @@ interface TokenRequest extends OAuthTokenRequestOptions {
 
 export type OAuthTokenErrorFactory = (message: string) => Error;
 
-export async function requestAuthorizationCodeToken(
-  input: AuthorizationCodeTokenRequest,
-): Promise<Extract<ResolvedCredential, { authType: "oauth2" }>> {
+export async function requestAuthorizationCodeToken(input: AuthorizationCodeTokenRequest): Promise<OAuthTokenResult> {
   return requestToken({
     ...input,
     fields: createAuthorizationCodeFields(input),
   });
 }
 
-export async function requestRefreshToken(
-  input: RefreshTokenRequest,
-): Promise<Extract<ResolvedCredential, { authType: "oauth2" }>> {
+export async function requestRefreshToken(input: RefreshTokenRequest): Promise<OAuthTokenResult> {
   return requestToken({
     ...input,
     fields: createRefreshTokenFields(input),
   });
 }
 
-async function requestToken(input: TokenRequest): Promise<Extract<ResolvedCredential, { authType: "oauth2" }>> {
+async function requestToken(input: TokenRequest): Promise<OAuthTokenResult> {
   const fields: Record<string, string> = { ...input.fields };
   const clientIdField = input.tokenRequestFields?.clientId;
   if (clientIdField !== false) {
@@ -90,56 +125,59 @@ async function requestToken(input: TokenRequest): Promise<Extract<ResolvedCreden
     body = new URLSearchParams(fields);
   }
 
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   try {
     response = await providerFetch(input.tokenUrl, {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(oauthTokenRequestTimeoutMs),
+      signal: timeout.signal,
       // Workers has no "error" redirect mode; "manual" surfaces any 3xx as a
       // non-ok response, which the check below rejects. Same intent as "error"
       // (never follow a redirect from the token endpoint), edge-compatible.
       redirect: "manual",
     });
   } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
+    timeout.cleanup();
+    if (input.signal?.aborted) {
+      throw input.createError("OAuth token request was cancelled.");
+    }
+    if (timeout.didTimeout() || isAbortLikeError(error)) {
       throw input.createError("OAuth token request timed out.");
     }
     // A rejected fetch has no HTTP response to inspect, but the request may
     // still have reached the provider before the connection failed.
     throw input.createError(`OAuth token request failed without an HTTP response: ${describeCause(error)}`);
   }
-  const bytes = await readTokenResponseBytes(response, input.createError);
-  const rawPayload = decodeTokenPayload(bytes);
-  const payload = unwrapTokenPayload(rawPayload, input.responseEnvelope);
-  if (!response.ok || !isEnvelopeSuccess(rawPayload, input.responseEnvelope)) {
-    const providerMessage = readTokenErrorMessage(rawPayload, payload, input.responseEnvelope);
-    const bodyDescription = bytes.byteLength === 0 ? "empty body" : "unrecognized response body";
-    throw input.createError(
-      providerMessage ??
-        // Token endpoints and intermediaries can echo request credentials. Keep
-        // arbitrary response bytes out of the public error while distinguishing
-        // an empty body from a non-conforming one.
-        `OAuth token request failed (HTTP ${response.status}, ${bodyDescription}).`,
-    );
-  }
+  try {
+    const bytes = await readTokenResponseBytes(response, input.createError);
+    const rawPayload = decodeTokenPayload(bytes);
+    const payload = unwrapTokenPayload(rawPayload, input.responseEnvelope);
+    if (!response.ok || !isEnvelopeSuccess(rawPayload, input.responseEnvelope)) {
+      const providerMessage = readTokenErrorMessage(rawPayload, payload, input.responseEnvelope);
+      const bodyDescription = bytes.byteLength === 0 ? "empty body" : "unrecognized response body";
+      throw input.createError(
+        providerMessage ??
+          // Token endpoints and intermediaries can echo request credentials. Keep
+          // arbitrary response bytes out of the public error while distinguishing
+          // an empty body from a non-conforming one.
+          `OAuth token request failed (HTTP ${response.status}, ${bodyDescription}).`,
+      );
+    }
 
-  const accessToken = requiredString(payload.access_token ?? payload.token, "access_token", input.createError);
-  const tokenType = optionalString(payload.token_type) ?? "Bearer";
-  return {
-    authType: "oauth2",
-    accessToken,
-    tokenType,
-    refreshToken: optionalString(payload.refresh_token),
-    expiresAt: expiresAtFromLifetime(payload.expires_in),
-    profile: {
-      accountId: "oauth2",
-      displayName: "OAuth Credential",
-      grantedScopes: [],
-    },
-    metadata: createTokenMetadata(payload),
-  };
+    const accessToken = requiredString(payload.access_token ?? payload.token, "access_token", input.createError);
+    const tokenType = optionalString(payload.token_type) ?? "Bearer";
+    return {
+      accessToken,
+      tokenType,
+      refreshToken: optionalString(payload.refresh_token),
+      expiresAt: expiresAtFromLifetime(payload.expires_in),
+      metadata: createTokenMetadata(payload),
+    };
+  } finally {
+    timeout.cleanup();
+  }
 }
 
 /** Read a bounded token response and map body-stream failures to a safe OAuth error. */
@@ -275,7 +313,10 @@ function createRefreshTokenFields(input: RefreshTokenRequest): Record<string, st
     "refresh_token",
     input.refreshToken,
   );
-  return fields;
+  return {
+    ...fields,
+    ...(input.extraFields ?? {}),
+  };
 }
 
 function setMappedField(

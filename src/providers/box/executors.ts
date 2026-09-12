@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers, OAuthProviderContext } from "../provider-runtime.ts";
 
 import {
@@ -12,11 +12,16 @@ import {
 import { readBoundedResponseBytes } from "../../core/request.ts";
 import {
   defineOAuthProviderExecutors,
+  defineProviderProxy,
+  providerInputError,
   ProviderRequestError,
+  providerResponseError,
   readProviderJsonBody,
   readTransitFileInput,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
+const service = "box";
 const boxApiBaseUrl = "https://api.box.com/2.0";
 const boxUploadBaseUrl = "https://upload.box.com/api/2.0";
 const boxSimpleUploadMaxBytes = 50 * 1024 * 1024;
@@ -42,10 +47,10 @@ export const boxActionHandlers: ProviderActionHandlers<"box", ActionHandler> = {
     return getCurrentUser(context);
   },
   get_file(input, context) {
-    return getItem("files", requireId(input.fileId, "fileId"), context);
+    return getItem("files", requiredInputString(input.fileId, "fileId"), context);
   },
   get_folder(input, context) {
-    return getItem("folders", requireId(input.folderId, "folderId"), context);
+    return getItem("folders", requiredInputString(input.folderId, "folderId"), context);
   },
   list_folder_items(input, context) {
     return listFolderItems(input, context, false);
@@ -79,7 +84,17 @@ export const boxActionHandlers: ProviderActionHandlers<"box", ActionHandler> = {
   },
 };
 
-export const executors: ProviderExecutors = defineOAuthProviderExecutors("box", boxActionHandlers);
+export const executors: ProviderExecutors = defineOAuthProviderExecutors(service, boxActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: boxApiBaseUrl,
+  auth: { type: "oauth_bearer" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async oauth2(input, { fetcher }) {
@@ -116,10 +131,10 @@ interface BoxUser {
 async function getCurrentUser(context: BoxRequestContext): Promise<BoxUser> {
   const payload = await boxJsonRequest("/users/me", context);
   return {
-    id: requiredString(payload.id, "Box user id", invalidResponse),
+    id: requiredString(payload.id, "Box user id", providerResponseError),
     type: "user",
-    name: requiredString(payload.name, "Box user name", invalidResponse),
-    login: requiredString(payload.login, "Box user login", invalidResponse),
+    name: requiredString(payload.name, "Box user name", providerResponseError),
+    login: requiredString(payload.login, "Box user login", providerResponseError),
     status: optionalString(payload.status),
     spaceAmount: optionalNumber(payload.space_amount),
     spaceUsed: optionalNumber(payload.space_used),
@@ -141,7 +156,7 @@ async function listFolderItems(
   context: BoxRequestContext,
   continuation: boolean,
 ): Promise<Record<string, unknown>> {
-  const folderId = requireId(input.folderId, "folderId");
+  const folderId = requiredInputString(input.folderId, "folderId");
   const url = new URL(`${boxApiBaseUrl}/folders/${encodeURIComponent(folderId)}/items`);
   const marker = optionalString(input.marker);
   const useMarker = continuation || marker != null || optionalBoolean(input.useMarker) === true;
@@ -159,7 +174,7 @@ async function listFolderItems(
 
 async function search(input: Record<string, unknown>, context: BoxRequestContext): Promise<Record<string, unknown>> {
   const url = new URL(`${boxApiBaseUrl}/search`);
-  setQuery(url, "query", requiredString(input.query, "query", invalidInput));
+  setQuery(url, "query", requiredString(input.query, "query", providerInputError));
   setQuery(url, "type", optionalString(input.type));
   setQuery(url, "ancestor_folder_ids", commaSeparated(input.ancestorFolderIds));
   setQuery(url, "file_extensions", commaSeparated(input.fileExtensions));
@@ -192,9 +207,9 @@ async function downloadFile(
     throw new ProviderRequestError(400, "box download_file requires local transit file storage");
   }
 
-  const fileId = requireId(input.fileId, "fileId");
+  const fileId = requiredInputString(input.fileId, "fileId");
   const { item } = await getItem("files", fileId, context);
-  const name = optionalString(input.fileName) ?? requiredString(item.name, "Box file name", invalidResponse);
+  const name = optionalString(input.fileName) ?? requiredString(item.name, "Box file name", providerResponseError);
   const reportedSize = optionalNumber(item.sizeBytes);
   if (reportedSize != null && reportedSize > context.transitFiles.maxBytes) {
     throw new ProviderRequestError(413, `Box download exceeds ${context.transitFiles.maxBytes} bytes`);
@@ -231,8 +246,8 @@ async function createFolder(
   const payload = await boxJsonRequest("/folders", context, {
     method: "POST",
     body: JSON.stringify({
-      name: requiredString(input.name, "name", invalidInput),
-      parent: { id: requireId(input.parentFolderId, "parentFolderId") },
+      name: requiredString(input.name, "name", providerInputError),
+      parent: { id: requiredInputString(input.parentFolderId, "parentFolderId") },
     }),
   });
   return { item: normalizeItem(payload) };
@@ -248,8 +263,8 @@ async function uploadFile(
   }
 
   const attributes: Record<string, unknown> = {
-    name: requiredString(input.name, "name", invalidInput),
-    parent: { id: requireId(input.parentFolderId, "parentFolderId") },
+    name: requiredString(input.name, "name", providerInputError),
+    parent: { id: requiredInputString(input.parentFolderId, "parentFolderId") },
   };
   const contentCreatedAt = optionalString(input.contentCreatedAt);
   const contentModifiedAt = optionalString(input.contentModifiedAt);
@@ -265,7 +280,7 @@ async function uploadFile(
   });
   const entries = readObjectArray(payload.entries);
   const item = entries[0];
-  if (!item) throw invalidResponse("Box upload response did not include a file");
+  if (!item) throw providerResponseError("Box upload response did not include a file");
   return { item: normalizeItem(item) };
 }
 
@@ -275,7 +290,7 @@ async function updateItem(
   context: BoxRequestContext,
 ): Promise<{ item: Record<string, unknown> }> {
   const key = resource === "files" ? "fileId" : "folderId";
-  const id = requireId(input[key], key);
+  const id = requiredInputString(input[key], key);
   const body: Record<string, unknown> = {};
   const name = optionalString(input.name);
   const description = typeof input.description === "string" ? input.description : undefined;
@@ -304,7 +319,7 @@ async function deleteItem(
   context: BoxRequestContext,
 ): Promise<Record<string, unknown>> {
   const key = resource === "files" ? "fileId" : "folderId";
-  const id = requireId(input[key], key);
+  const id = requiredInputString(input[key], key);
   const url = new URL(`${boxApiBaseUrl}/${resource}/${encodeURIComponent(id)}`);
   const recursive = resource === "folders" ? optionalBoolean(input.recursive) : undefined;
   if (resource === "folders") setQuery(url, "recursive", recursive);
@@ -337,7 +352,7 @@ async function boxJsonRequest(
     emptyBody: {},
     invalidJsonMessage: "Box returned invalid JSON",
   });
-  return requiredRecord(payload, "Box response", invalidResponse);
+  return requiredRecord(payload, "Box response", providerResponseError);
 }
 
 function boxRequest(path: string | URL, context: BoxRequestContext, init: RequestInit = {}): Promise<Response> {
@@ -373,9 +388,9 @@ async function boxResponseError(response: Response, fallback: string): Promise<P
 function normalizeItem(payload: Record<string, unknown>): Record<string, unknown> {
   return {
     ...payload,
-    id: requiredString(payload.id, "Box item id", invalidResponse),
-    type: requiredString(payload.type, "Box item type", invalidResponse),
-    name: requiredString(payload.name, "Box item name", invalidResponse),
+    id: requiredString(payload.id, "Box item id", providerResponseError),
+    type: requiredString(payload.type, "Box item type", providerResponseError),
+    name: requiredString(payload.name, "Box item name", providerResponseError),
     etag: optionalString(payload.etag) ?? null,
     sequenceId: optionalString(payload.sequence_id) ?? null,
     description: typeof payload.description === "string" ? payload.description : null,
@@ -401,7 +416,7 @@ function normalizeItemPage(payload: Record<string, unknown>): Record<string, unk
 
 function readObjectArray(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return [];
-  return value.map((item, index) => requiredRecord(item, `Box entries[${index}]`, invalidResponse));
+  return value.map((item, index) => requiredRecord(item, `Box entries[${index}]`, providerResponseError));
 }
 
 function commaSeparated(value: unknown): string | undefined {
@@ -412,16 +427,4 @@ function commaSeparated(value: unknown): string | undefined {
 
 function setQuery(url: URL, name: string, value: string | number | boolean | undefined): void {
   if (value != null) url.searchParams.set(name, String(value));
-}
-
-function requireId(value: unknown, name: string): string {
-  return requiredString(value, name, invalidInput);
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function invalidResponse(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

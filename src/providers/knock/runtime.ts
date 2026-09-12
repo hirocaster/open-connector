@@ -5,15 +5,13 @@ import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 import { compactObject, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 export const knockApiBaseUrl = "https://api.knock.app/v1";
-
-const requestTimeoutMs = 30_000;
 
 type KnockRequestMode = "validate" | "execute";
 type KnockActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
@@ -44,7 +42,7 @@ export const knockActionHandlers: ProviderActionHandlers<"knock", KnockActionHan
     return normalizeUserListResponse(payload);
   },
   async get_user(input, context) {
-    const userId = requiredString(input.userId, "userId", invalidInputError);
+    const userId = requiredString(input.userId, "userId", providerInputError);
     const payload = await requestKnockJson(
       {
         method: "GET",
@@ -57,7 +55,7 @@ export const knockActionHandlers: ProviderActionHandlers<"knock", KnockActionHan
     return { user: normalizeUser(payload) };
   },
   async identify_user(input, context) {
-    const userId = requiredString(input.userId, "userId", invalidInputError);
+    const userId = requiredString(input.userId, "userId", providerInputError);
     const payload = await requestKnockJson(
       {
         method: "PUT",
@@ -71,7 +69,7 @@ export const knockActionHandlers: ProviderActionHandlers<"knock", KnockActionHan
     return { user: normalizeUser(payload) };
   },
   async delete_user(input, context) {
-    const userId = requiredString(input.userId, "userId", invalidInputError);
+    const userId = requiredString(input.userId, "userId", providerInputError);
     await requestKnockJson(
       {
         method: "DELETE",
@@ -87,7 +85,7 @@ export const knockActionHandlers: ProviderActionHandlers<"knock", KnockActionHan
     };
   },
   async trigger_workflow(input, context) {
-    const key = requiredString(input.key, "key", invalidInputError);
+    const key = requiredString(input.key, "key", providerInputError);
     const payload = await requestKnockJson(
       {
         method: "POST",
@@ -154,9 +152,7 @@ async function requestKnockJson(
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
   mode: KnockRequestMode,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
-
-  try {
+  return runProviderRequest({ signal: context.signal, label: "Knock" }, async (signal) => {
     const headers = knockHeaders(context.apiKey);
     if (request.idempotencyKey) {
       headers["Idempotency-Key"] = request.idempotencyKey;
@@ -166,7 +162,7 @@ async function requestKnockJson(
       method: request.method,
       headers,
       body: request.body === undefined ? undefined : JSON.stringify(request.body),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readKnockPayload(response);
 
@@ -179,22 +175,7 @@ async function requestKnockJson(
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Knock request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Knock request failed: ${error.message}` : "Knock request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildKnockUrl(path: string, query: Record<string, string | string[] | undefined> = {}): URL {
@@ -344,8 +325,4 @@ function optionalStringArray(value: unknown): string[] | undefined {
 
 function requireProviderRecord(value: unknown, message: string): Record<string, unknown> {
   return requiredRecord(value, message, (errorMessage) => new ProviderRequestError(502, errorMessage));
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

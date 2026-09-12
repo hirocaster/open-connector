@@ -74,6 +74,7 @@ const githubRequiredInputFields: Record<string, string[]> = {
   list_workflow_runs: ["owner", "repo"],
   get_workflow_run: ["owner", "repo", "runId"],
   list_workflow_run_jobs: ["owner", "repo", "runId"],
+  get_workflow_job_logs: ["owner", "repo", "jobId"],
   rerun_workflow: ["owner", "repo", "runId"],
   list_releases: ["owner", "repo"],
   create_release: ["owner", "repo", "tagName"],
@@ -1452,6 +1453,22 @@ export const githubActions: ActionDefinition[] = [
     }),
   }),
   action({
+    name: "get_workflow_job_logs",
+    description: "Get the tail of the plain-text logs for a completed GitHub Actions workflow job.",
+    requiredScopes: githubRepoScopes,
+    inputSchema: s.object({
+      owner: nonEmptyString,
+      repo: nonEmptyString,
+      jobId: s.integer({ minimum: 1 }),
+    }),
+    outputSchema: s.object({
+      logs: s.string({ description: "The complete log text or its trailing 256 KiB when truncated." }),
+      sizeBytes: s.integer({ description: "The total size of the downloaded log in bytes." }),
+      returnedBytes: s.integer({ description: "The number of source log bytes represented by logs." }),
+      truncated: s.boolean({ description: "Whether logs omits bytes from the beginning of the job log." }),
+    }),
+  }),
+  action({
     name: "rerun_workflow",
     description: "Re-run a GitHub Actions workflow run.",
     requiredScopes: githubWorkflowScopes,
@@ -2544,6 +2561,18 @@ export const githubActions: ActionDefinition[] = [
       total_count: s.integer(),
       artifacts: s.array(githubArtifactSchema),
     }),
+  }),
+  action({
+    name: "download_workflow_artifact",
+    description: "Download a GitHub Actions workflow artifact ZIP into local transit-file storage.",
+    requiredScopes: githubRepoScopes,
+    inputSchema: s.object({
+      owner: nonEmptyString,
+      repo: nonEmptyString,
+      artifactId: s.integer({ minimum: 1 }),
+      fileName: s.string("Optional ZIP filename override."),
+    }),
+    outputSchema: s.object({ file: s.unknown("The stored local transit file.") }),
   }),
   action({
     name: "update_release",

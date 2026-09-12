@@ -16,10 +16,15 @@ import {
   stringArray,
 } from "../../core/cast.ts";
 import { jsonObject, readBoundedResponseBytes } from "../../core/request.ts";
-import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+  readTransitFileInput,
+} from "../provider-runtime.ts";
 import { supabaseProviderScopes } from "./scopes.ts";
 
-const supabaseApiBaseUrl = "https://api.supabase.com/v1";
+export const supabaseApiBaseUrl: string = "https://api.supabase.com/v1";
 const supabaseProjectHostSuffix = ".supabase.co";
 const supabaseStorageAuthenticatedObjectPath = "/storage/v1/object/authenticated";
 const projectStatuses = new Set([
@@ -118,6 +123,9 @@ export const supabaseActionHandlers: ProviderActionHandlers<"supabase", Supabase
   },
   download_storage_object(input, context) {
     return supabaseDownloadStorageObject(input, context);
+  },
+  upload_storage_object(input, context) {
+    return supabaseUploadStorageObject(input, context);
   },
   list_edge_functions(input, context) {
     return supabaseListEdgeFunctions(input, context);
@@ -556,7 +564,7 @@ async function supabaseDownloadStorageObject(
   }
 
   const projectRef = readStorageProjectRef(input);
-  const bucketId = requiredString(input.bucketId, "bucketId", providerInputError);
+  const bucketId = readStorageBucketId(input);
   const objectPath = requiredRawString(input.objectPath, "objectPath", providerInputError);
   if (objectPath.length === 0) {
     throw providerInputError("objectPath must not be empty");
@@ -568,7 +576,7 @@ async function supabaseDownloadStorageObject(
     throw providerInputError("objectPath must not contain . or .. path segments");
   }
 
-  const storageKey = await resolveSupabaseStorageKey(input, projectRef, context);
+  const storageKey = await resolveSupabaseStorageKey(input, projectRef, context, "download");
   const url = new URL(
     `https://${projectRef}${supabaseProjectHostSuffix}${supabaseStorageAuthenticatedObjectPath}/${encodeURIComponent(bucketId)}/${encodeStorageObjectPath(objectPath)}`,
   );
@@ -609,6 +617,77 @@ async function supabaseDownloadStorageObject(
   };
 }
 
+async function supabaseUploadStorageObject(
+  input: SupabaseActionInput,
+  context: BearerProviderContext,
+): Promise<unknown> {
+  if (!context.transitFiles) {
+    throw providerInputError("supabase upload_storage_object requires local transit file storage");
+  }
+  const projectRef = readStorageProjectRef(input);
+  const bucketId = readStorageBucketId(input);
+  const objectPath = requiredRawString(input.objectPath, "objectPath", providerInputError);
+  if (objectPath.length === 0) {
+    throw providerInputError("objectPath must not be empty");
+  }
+  if (objectPath.startsWith("/")) {
+    throw providerInputError("objectPath must not start with a slash");
+  }
+  if (objectPath.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw providerInputError("objectPath must not contain . or .. path segments");
+  }
+  const source = await readTransitFileInput(input.file, context);
+  if (source.sizeBytes > context.transitFiles.maxBytes) {
+    throw new ProviderRequestError(413, `Supabase Storage upload exceeds ${context.transitFiles.maxBytes} bytes`);
+  }
+  const mime = optionalString(input.contentType) ?? optionalString(source.mimeType) ?? "application/octet-stream";
+  const storageKey = await resolveSupabaseStorageKey(input, projectRef, context, "upload");
+  const upsert = optionalBoolean(input.upsert) ?? false;
+  const method = "POST";
+  const url = new URL(
+    `https://${projectRef}${supabaseProjectHostSuffix}/storage/v1/object/${encodeURIComponent(bucketId)}/${encodeStorageObjectPath(objectPath)}`,
+  );
+  const headers: Record<string, string> = {
+    apikey: storageKey.value,
+    "content-type": mime,
+    "user-agent": providerUserAgent,
+  };
+  if (storageKey.authorizationBearer) {
+    headers.authorization = `Bearer ${storageKey.value}`;
+  }
+  if (upsert) {
+    headers["x-upsert"] = "true";
+  }
+  const cacheControl = optionalString(input.cacheControl);
+  if (cacheControl) {
+    headers["cache-control"] = cacheControl;
+  }
+  const body = source.file;
+  const response = await context.fetcher(url, {
+    method,
+    headers,
+    body,
+    signal: context.signal,
+  });
+  if (!response.ok) {
+    const bytes = await readBoundedResponseBytes(response, {
+      maxBytes: 64 * 1024,
+      fieldName: "Supabase Storage upload error response",
+      createError: (message) => new ProviderRequestError(413, message),
+    });
+    throw createSupabaseError(response, parseSupabaseStorageError(bytes), "execute");
+  }
+  return {
+    bucketId,
+    objectPath,
+    fileId: `${bucketId}/${objectPath}`,
+    name: defaultStorageObjectName(objectPath),
+    mimeType: mime,
+    sizeBytes: source.sizeBytes,
+    etag: response.headers.get("etag") ?? null,
+  };
+}
+
 interface SupabaseStorageKey {
   value: string;
   authorizationBearer: boolean;
@@ -618,6 +697,7 @@ async function resolveSupabaseStorageKey(
   input: SupabaseActionInput,
   projectRef: string,
   context: BearerProviderContext,
+  operation: "download" | "upload",
 ): Promise<SupabaseStorageKey> {
   const apiKeyId = optionalString(input.apiKeyId);
   const payload = await requestSupabaseJson({
@@ -643,8 +723,16 @@ async function resolveSupabaseStorageKey(
   throw providerInputError(
     apiKeyId
       ? "The selected Supabase API key is not an elevated secret or legacy service_role key."
-      : "Supabase Storage download requires a revealed secret or legacy service_role project API key.",
+      : `Supabase Storage ${operation} requires a revealed secret or legacy service_role project API key.`,
   );
+}
+
+function readStorageBucketId(input: SupabaseActionInput): string {
+  const bucketId = requiredString(input.bucketId, "bucketId", providerInputError);
+  if (/^\.+$/.test(bucketId)) {
+    throw providerInputError("bucketId must not be a . or .. path segment");
+  }
+  return bucketId;
 }
 
 function readStorageProjectRef(input: SupabaseActionInput): string {
@@ -1133,10 +1221,6 @@ function buildSupabaseAccountLabel(organizations: SupabaseOrganizationSummary[])
   return organizations.length === 1
     ? `Supabase (${firstName})`
     : `Supabase (${firstName} +${organizations.length - 1})`;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function providerMalformedError(message: string): ProviderRequestError {

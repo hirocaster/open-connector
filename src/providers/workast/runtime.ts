@@ -12,7 +12,6 @@ import {
 
 export const workastApiBaseUrl = "https://api.todobot.io";
 
-const workastRequestTimeoutMs = 30_000;
 const taskWriteKeys = ["text", "description", "startDate", "dueDate", "dueDateTimezone", "dueDateTime"] as const;
 
 type WorkastRequestPhase = "validate" | "execute";
@@ -180,7 +179,7 @@ async function getTask(
 }
 
 async function requestWorkastJson(options: WorkastRequestOptions) {
-  const timeout = createProviderTimeout(options.signal, workastRequestTimeoutMs);
+  const timeout = createProviderTimeout(options.signal);
   const url = new URL(`${workastApiBaseUrl}${options.path}`);
   appendQuery(url, options.query);
   const headers: Record<string, string> = {
@@ -242,7 +241,7 @@ function mapWorkastError(status: number, payload: unknown, phase: WorkastRequest
   if (status == 401 || status == 403) {
     return phase == "validate"
       ? providerError("invalid_input", message, 400)
-      : providerError("credential_expired", message, 409);
+      : providerError("credential_expired", message, 401);
   }
   if (status == 429) return providerError("rate_limited", message, 429);
   if (status == 400 || status == 404 || status == 409 || status == 422) {

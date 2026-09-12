@@ -2,7 +2,7 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
 
-import { optionalRecord, optionalString } from "../../core/cast.ts";
+import { optionalRecord, optionalString, recordOrEmpty } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
@@ -27,8 +27,6 @@ interface BooqableRequestInput {
   body?: JsonObject;
   notFoundAsInvalidInput?: boolean;
 }
-
-const booqableRequestTimeoutMs = 30_000;
 
 export const booqableActionHandlers: ProviderActionHandlers<"booqable", ProviderRuntimeHandler<BooqableContext>> = {
   async get_current_company(input, context) {
@@ -234,7 +232,7 @@ function readSearchBody(input: Record<string, unknown>): JsonObject {
 }
 
 async function requestBooqableJson(input: BooqableRequestInput): Promise<JsonObject> {
-  const timeout = createProviderTimeout(input.context.signal, booqableRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(buildBooqableUrl(input.context.companySlug, input.path, input.query), {
       method: input.method,
@@ -380,8 +378,8 @@ function normalizeCollectionResponse(payload: JsonObject, outputKey: string, lab
   return {
     [outputKey]: data.map((item) => readObject(item, `${label} resource`)),
     included: readObjectArray(payload.included, "included"),
-    links: readOptionalObject(payload.links),
-    meta: readOptionalObject(payload.meta),
+    links: recordOrEmpty(payload.links),
+    meta: recordOrEmpty(payload.meta),
   };
 }
 
@@ -389,7 +387,7 @@ function normalizeSingleResponse(payload: JsonObject, outputKey: string, label: 
   return {
     [outputKey]: readObject(payload.data, `${label} resource`),
     included: readObjectArray(payload.included, "included"),
-    meta: readOptionalObject(payload.meta),
+    meta: recordOrEmpty(payload.meta),
   };
 }
 
@@ -407,10 +405,6 @@ function readObject(value: unknown, label: string): JsonObject {
     throw new ProviderRequestError(502, `Booqable returned invalid ${label}`);
   }
   return record;
-}
-
-function readOptionalObject(value: unknown): JsonObject {
-  return optionalRecord(value) ?? {};
 }
 
 function readObjectArray(value: unknown, label: string): JsonObject[] {

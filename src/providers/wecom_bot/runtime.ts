@@ -4,11 +4,15 @@ import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
 import { objectArray, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const wecomBotApiBaseUrl = "https://qyapi.weixin.qq.com";
 const wecomBotWebhookPath = "/cgi-bin/webhook/send";
-const wecomBotRequestTimeoutMs = 30_000;
 const wecomBotValidationSuccessCodes = new Set([0, 40008, 40058, 93017]);
 const utf8Encoder = new TextEncoder();
 
@@ -143,7 +147,7 @@ async function requestWecomBot(input: {
   fetcher: ProviderFetch;
   signal?: AbortSignal;
 }): Promise<WecomBotRequestResult> {
-  const timeout = createProviderTimeout(input.signal, wecomBotRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildWecomBotWebhookUrl(input.apiKey), {
       method: "POST",
@@ -262,8 +266,4 @@ function requireUtf8Content(value: unknown, fieldName: string, maxBytes: number)
     throw new ProviderRequestError(400, `${fieldName} must be at most ${maxBytes} UTF-8 bytes`);
   }
   return content;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

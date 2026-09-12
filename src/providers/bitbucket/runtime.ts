@@ -2,22 +2,12 @@ import {
   compactObject,
   optionalBoolean,
   optionalInteger as asOptionalInteger,
-  optionalRecord,
   optionalString as asOptionalString,
+  recordOrEmpty,
 } from "../../core/cast.ts";
 import { ProviderRequestError } from "../provider-runtime.ts";
 import { bitbucketActions } from "./actions.ts";
 import { fetchBitbucketText } from "./http.ts";
-
-class ConnectorError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number, cause?: unknown) {
-    super(status, message, cause);
-  }
-}
-
-function asObject(value: unknown): Record<string, unknown> {
-  return optionalRecord(value) ?? {};
-}
 
 export const bitbucketApiBaseUrl = "https://api.bitbucket.org/2.0";
 
@@ -137,7 +127,7 @@ async function dispatchBitbucketAction(actionName: string, input: Record<string,
       if (response.status === 202) {
         const mergeTask = readMergeTask(response.headers.get("location"), input);
         if (!mergeTask) {
-          throw new ConnectorError("provider_error", "bitbucket merge response did not include a valid task ID", 502);
+          throw new ProviderRequestError(502, "bitbucket merge response did not include a valid task ID");
         }
         return {
           status: "queued",
@@ -257,7 +247,7 @@ async function dispatchBitbucketAction(actionName: string, input: Record<string,
     case "list_repository_runners":
       return listRequest(`${repositoryPath(input)}/pipelines-config/runners`, "runners", input, context);
     default:
-      throw new ConnectorError("invalid_input", `unknown bitbucket action: ${actionName}`, 400);
+      throw new ProviderRequestError(400, `unknown bitbucket action: ${actionName}`);
   }
 }
 
@@ -316,16 +306,16 @@ function buildPipelineBody(input: Record<string, unknown>) {
   const refName = asOptionalString(input.refName);
   const commitHash = asOptionalString(input.commitHash);
   if (refType === "commit" && !commitHash) {
-    throw new ConnectorError("invalid_input", "commitHash is required for a commit target", 400);
+    throw new ProviderRequestError(400, "commitHash is required for a commit target");
   }
   if ((refType === "branch" || refType === "tag") && !refName) {
-    throw new ConnectorError("invalid_input", "refName is required for a branch or tag target", 400);
+    throw new ProviderRequestError(400, "refName is required for a branch or tag target");
   }
 
   const selectorType = asOptionalString(input.selectorType);
   const selectorPattern = asOptionalString(input.selectorPattern);
   if ((selectorType && !selectorPattern) || (!selectorType && selectorPattern)) {
-    throw new ConnectorError("invalid_input", "selectorType and selectorPattern must be provided together", 400);
+    throw new ProviderRequestError(400, "selectorType and selectorPattern must be provided together");
   }
   const selector = selectorType ? compactObject({ type: selectorType, pattern: selectorPattern }) : undefined;
   const target =
@@ -346,7 +336,7 @@ function buildPipelineBody(input: Record<string, unknown>) {
   return compactObject({
     target,
     variables: Array.isArray(input.variables)
-      ? input.variables.map((item) => pipelineVariableBody(asObject(item)))
+      ? input.variables.map((item) => pipelineVariableBody(recordOrEmpty(item)))
       : undefined,
   });
 }
@@ -367,7 +357,7 @@ async function bitbucketRequest(path: string, context: BitbucketContext, options
   const payload = asBitbucketResponseObject(result.payload, "api response");
   const errorMessage = readBitbucketErrorMessage(payload);
   if (errorMessage && Object.hasOwn(payload, "error")) {
-    throw new ConnectorError("provider_error", errorMessage, 502);
+    throw new ProviderRequestError(502, errorMessage);
   }
   return payload;
 }
@@ -406,14 +396,14 @@ async function bitbucketRequestWithResponse(
 
 function asBitbucketResponseObject(value: unknown, label: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new ConnectorError("provider_error", `bitbucket ${label} is invalid`, 502);
+    throw new ProviderRequestError(502, `bitbucket ${label} is invalid`);
   }
   return value as Record<string, unknown>;
 }
 
 function asBitbucketResponseArray(value: unknown, label: string) {
   if (!Array.isArray(value)) {
-    throw new ConnectorError("provider_error", `bitbucket ${label} is invalid`, 502);
+    throw new ProviderRequestError(502, `bitbucket ${label} is invalid`);
   }
   return value;
 }
@@ -446,7 +436,7 @@ function readBitbucketPayload(response: Response, text: string) {
     return JSON.parse(text) as unknown;
   } catch {
     if (response.ok) {
-      throw new ConnectorError("provider_error", "bitbucket api returned invalid JSON", 502);
+      throw new ProviderRequestError(502, "bitbucket api returned invalid JSON");
     }
     return { error: { message: text } };
   }
@@ -455,34 +445,34 @@ function readBitbucketPayload(response: Response, text: string) {
 function normalizeBitbucketError(response: Response, payload: unknown) {
   const message = readBitbucketErrorMessage(payload) ?? `bitbucket api request failed with ${response.status}`;
   if (response.status === 401) {
-    return new ConnectorError("credential_expired", message, 401);
+    return new ProviderRequestError(401, message);
   }
   if (response.status === 403) {
     const challenge = response.headers.get("www-authenticate")?.toLowerCase();
     return challenge?.includes("insufficient_scope") || challenge?.includes("insufficient scope")
-      ? new ConnectorError("scope_missing", message, 403)
-      : new ConnectorError("provider_error", message, 403);
+      ? new ProviderRequestError(403, message)
+      : new ProviderRequestError(403, message);
   }
   if (response.status === 429) {
-    return new ConnectorError("rate_limited", message, 429);
+    return new ProviderRequestError(429, message);
   }
   if (response.status === 400 || response.status === 404 || response.status === 409) {
-    return new ConnectorError("invalid_input", message, response.status);
+    return new ProviderRequestError(response.status, message);
   }
-  return new ConnectorError("provider_error", message, response.status);
+  return new ProviderRequestError(response.status, message);
 }
 
 function assertIssueUpdateInput(input: Record<string, unknown>) {
   if (["title", "content", "state", "kind", "priority"].some((field) => input[field] !== undefined)) {
     return;
   }
-  throw new ConnectorError("invalid_input", "at least one issue field must be provided for update_issue", 400);
+  throw new ProviderRequestError(400, "at least one issue field must be provided for update_issue");
 }
 
 function normalizePipeline(value: unknown) {
   const pipeline = asBitbucketResponseObject(value, "pipeline response");
   if (!asOptionalString(pipeline.uuid)) {
-    throw new ConnectorError("provider_error", "bitbucket pipeline UUID is missing", 502);
+    throw new ProviderRequestError(502, "bitbucket pipeline UUID is missing");
   }
   const state = asBitbucketResponseObject(pipeline.state, "pipeline state");
   const stateName = asOptionalString(state.name);
@@ -499,7 +489,7 @@ function normalizePipeline(value: unknown) {
       return { ...pipeline, status: "failed" };
     }
   }
-  throw new ConnectorError("provider_error", "bitbucket pipeline state is invalid", 502);
+  throw new ProviderRequestError(502, "bitbucket pipeline state is invalid");
 }
 
 function readBitbucketErrorMessage(payload: unknown) {

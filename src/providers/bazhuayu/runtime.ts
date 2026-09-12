@@ -10,9 +10,7 @@ import {
 } from "../provider-runtime.ts";
 
 export const bazhuayuApiBaseUrl = "https://openapi.bazhuayu.com";
-export const bazhuayuApiDocsUrl = "https://openapi.bazhuayu.com/zh-CN/";
 
-const requestTimeoutMs = 30_000;
 export const maximumBazhuayuResponseBytes: number = 10 * 1024 * 1024;
 const tokenRefreshLeewayMs = 60_000;
 const maximumTokenCacheEntries = 1_024;
@@ -426,16 +424,6 @@ async function requestToken(
   };
 }
 
-export async function requestBazhuayuJson(
-  url: URL,
-  init: RequestInit,
-  fetcher: ProviderFetch,
-  phase: "validate" | "execute",
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-  return requestJson(url, init, fetcher, phase, signal);
-}
-
 async function requestJson(
   url: URL,
   init: RequestInit,
@@ -443,7 +431,7 @@ async function requestJson(
   phase: "validate" | "execute",
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(signal);
   try {
     const response = await fetcher(url, { ...init, signal: timeout.signal });
     const payload = await readProviderJsonBody(response, {

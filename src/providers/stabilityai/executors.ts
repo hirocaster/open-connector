@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
@@ -8,6 +8,7 @@ import { readBoundedResponseBytes } from "../../core/request.ts";
 import {
   createProviderTimeout,
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
@@ -17,7 +18,6 @@ const service = "stabilityai";
 const stabilityAiApiBaseUrl = "https://api.stability.ai";
 const stabilityAiValidationPath = "/v1/user/account";
 const stabilityAiTextToAudioPath = "/v2beta/audio/stable-audio-2/text-to-audio";
-const stabilityAiDefaultRequestTimeoutMs = 30_000;
 
 type StabilityAiPhase = "validate" | "execute";
 type StabilityAiActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
@@ -40,6 +40,16 @@ export const stabilityaiActionHandlers: ProviderActionHandlers<"stabilityai", St
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, stabilityaiActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: stabilityAiApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -199,7 +209,7 @@ async function requestStabilityAiJson(input: StabilityAiRequestInput): Promise<u
 }
 
 async function requestStabilityAiResponse(input: StabilityAiRequestInput): Promise<Response> {
-  const timeout = createProviderTimeout(input.signal, stabilityAiDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(new URL(input.path, stabilityAiApiBaseUrl), {
       method: input.method ?? "GET",

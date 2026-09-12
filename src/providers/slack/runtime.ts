@@ -15,9 +15,8 @@ import {
 } from "../provider-runtime.ts";
 import { slackConversationTypes } from "./constants.ts";
 
-const slackApiBaseUrl = "https://slack.com/api";
+export const slackApiBaseUrl = "https://slack.com/api";
 const slackFileUrlMaxBytes = 100 * 1024 * 1024;
-const slackFileUrlFetchTimeoutMs = 30_000;
 
 type SlackActionContext = Omit<OAuthProviderContext, "providerSecret" | "tokenType">;
 type SlackOAuthTokenKind = "bot" | "user";
@@ -77,6 +76,9 @@ export const slackActionHandlers: ProviderActionHandlers<"slack", SlackActionHan
   },
   search_messages(input, context) {
     return slackSearchMessages(input, context);
+  },
+  search_context(input, context) {
+    return slackSearchContext(input, context);
   },
   post_message(input, context) {
     return slackPostMessage(input, context);
@@ -262,6 +264,43 @@ async function slackSearchMessages(input: Record<string, unknown>, context: Slac
     total: typeof payload.messages?.total === "number" ? payload.messages.total : 0,
     pagination: payload.messages?.pagination ?? {},
     paging: payload.messages?.paging ?? {},
+    nextCursor: normalizeNextCursor(payload.response_metadata?.next_cursor),
+  };
+}
+
+async function slackSearchContext(input: Record<string, unknown>, context: SlackActionContext): Promise<unknown> {
+  const query = requiredString(input.query, "query", (message) => new ProviderRequestError(400, message));
+  const payload = await slackRequestJson<{
+    ok: boolean;
+    results?: { messages?: Array<Record<string, unknown>> };
+    response_metadata?: { next_cursor?: string };
+    error?: string;
+  }>({
+    ...context,
+    method: "assistant.search.context",
+    body: {
+      query,
+      content_types: ["messages"],
+      channel_types: Array.isArray(input.channelTypes) ? input.channelTypes : undefined,
+      context_channel_id: optionalString(input.contextChannelId),
+      cursor: optionalString(input.cursor),
+      limit: input.limit,
+      sort: input.sort,
+      sort_dir: input.sortDir,
+      before: input.before,
+      after: input.after,
+      include_context_messages: optionalBoolean(input.includeContextMessages),
+      include_bots: optionalBoolean(input.includeBots),
+      include_message_blocks: optionalBoolean(input.includeMessageBlocks),
+      highlight: optionalBoolean(input.highlight),
+      term_clauses: Array.isArray(input.termClauses) ? input.termClauses : undefined,
+      modifiers: optionalString(input.modifiers),
+      include_archived_channels: optionalBoolean(input.includeArchivedChannels),
+      disable_semantic_search: optionalBoolean(input.disableSemanticSearch),
+    },
+  });
+  return {
+    messages: payload.results?.messages ?? [],
     nextCursor: normalizeNextCursor(payload.response_metadata?.next_cursor),
   };
 }
@@ -773,7 +812,7 @@ async function resolveSlackFileContent(
 ): Promise<Uint8Array> {
   const fileUrl = requiredString(input.fileUrl, "fileUrl", (message) => new ProviderRequestError(400, message));
   assertFetchableFileUrl(fileUrl);
-  const timeout = createProviderTimeout(context.signal, slackFileUrlFetchTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(fileUrl, { signal: timeout.signal });
     if (!response.ok) {
@@ -983,6 +1022,7 @@ function assertSlackPayload(payload: SlackPayloadError): void {
     case "token_revoked":
       throw new ProviderRequestError(401, message, payload);
     case "ratelimited":
+    case "rate_limited":
       throw new ProviderRequestError(429, message, payload);
     default:
       throw new ProviderRequestError(400, message, payload);

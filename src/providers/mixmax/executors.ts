@@ -14,6 +14,7 @@ import {
   createProviderTimeout,
   defineApiKeyProviderExecutors,
   defineProviderProxy,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
@@ -22,7 +23,6 @@ import {
 const service = "mixmax";
 const mixmaxApiBaseUrl = "https://api.mixmax.com";
 const mixmaxValidationPath = "/v1/users/me";
-const mixmaxRequestTimeoutMs = 30_000;
 const mixmaxMaxResponseBytes = 10 * 1024 * 1024;
 
 interface MixmaxContext {
@@ -177,7 +177,7 @@ async function requestMixmaxJson(input: MixmaxRequestOptions, context: MixmaxCon
     }
   }
   const method = input.method ?? "GET";
-  const timeout = createProviderTimeout(context.signal, mixmaxRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method,
@@ -262,8 +262,4 @@ function validateRecipients(value: unknown): void {
       );
     }
   }
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

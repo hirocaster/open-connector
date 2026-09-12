@@ -81,6 +81,21 @@ describe("action execution OpenAPI", () => {
     },
   );
 
+  it("documents the same runtime statuses on both /v1 execution routes", () => {
+    const document = createOpenApiDocument([provider]);
+    const documentedStatuses = (path: string): string[] =>
+      Object.keys((document.paths[path] as { post: { responses: Record<string, unknown> } }).post.responses);
+
+    // The action route now honors an upstream 413 the way the proxy route did,
+    // and the proxy route now answers 402 the way the action route did. The two
+    // routes derive their status from the same error object, so a status one
+    // route documents and the other hides is a contract the client cannot read.
+    expect(documentedStatuses("/v1/actions/{actionId}")).toContain("413");
+    expect(documentedStatuses("/v1/actions/{actionId}")).toContain("402");
+    expect(documentedStatuses("/v1/proxy/{service}")).toContain("402");
+    expect(documentedStatuses("/v1/proxy/{service}")).toContain("413");
+  });
+
   it("documents public /v1 catalog routes with the runtime envelope", () => {
     const document = createOpenApiDocument([provider]);
     const search = document.paths["/v1/actions/search"] as {
@@ -128,16 +143,13 @@ describe("action execution OpenAPI", () => {
     expect(healthSchema?.required).toEqual(expect.arrayContaining(["success", "message", "data", "meta"]));
     expect(healthDataSchema?.type).toBe("object");
     expect(healthDataSchema?.required).toEqual(expect.arrayContaining(["ok", "runtime"]));
-    expect(document.components.schemas.ActionSearchRuntimeResult).toEqual({
-      $ref: "#/components/schemas/ActionSearchResult",
-    });
     expect(search.get.responses["400"]?.content?.["application/json"]?.schema?.required).toEqual(
       expect.arrayContaining(["success", "errorCode"]),
     );
     expect(search.get.responses["404"]).toBeUndefined();
     expect(connectedApp.required).toEqual(expect.arrayContaining(["alias", "isDefault"]));
     expect(connectedApp.properties.alias?.description).toContain("connectionName");
-    expect(connectedApp.properties.alias?.description).not.toContain("x-oomol-connector-alias");
+    expect(connectedApp.properties.alias?.description).toContain("x-oo-connector-alias");
     expect(authenticatedApps.get.summary).toBe(
       "Return authenticated provider service IDs from the supplied candidates.",
     );

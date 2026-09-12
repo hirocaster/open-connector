@@ -1,19 +1,24 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 
 import { compactObject, optionalIntegerLike, optionalRawString } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
   defineProviderExecutors,
+  defineProviderProxy,
   mapProviderActionSources,
   providerUserAgent,
   ProviderRequestError,
   requireApiKeyCredential,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 export const semrushApiBaseUrl = "https://api.semrush.com";
 
-const semrushDefaultRequestTimeoutMs = 30_000;
 const semrushEmptyResultPrefix = "ERROR 50 :: NOTHING FOUND";
 
 type SemrushPhase = "validate" | "execute";
@@ -93,6 +98,16 @@ export const executors: ProviderExecutors = defineProviderExecutors<SemrushActio
   },
 });
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service: "semrush",
+  baseUrl: semrushApiBaseUrl,
+  auth: { type: "api_key_query", name: "key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "text/csv, text/plain, */*");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher }) {
     const report = await requestSemrushReport({
@@ -128,16 +143,14 @@ async function requestSemrushReport(input: {
   fetcher: typeof fetch;
   phase: SemrushPhase;
 }) {
-  const timeoutHandle = createProviderTimeout(undefined, semrushDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ label: "Semrush" }, async (signal) => {
     const response = await input.fetcher(buildSemrushUrl(input.apiKey, input.params), {
       method: "GET",
       headers: {
         accept: "text/csv, text/plain, */*",
         "user-agent": providerUserAgent,
       },
-      signal: timeoutHandle.signal,
+      signal,
     });
     const text = await response.text();
 
@@ -146,22 +159,7 @@ async function requestSemrushReport(input: {
     }
 
     return parseSemrushCsvReport(text);
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Semrush request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Semrush request failed: ${error.message}` : "Semrush request failed",
-    );
-  } finally {
-    timeoutHandle.cleanup();
-  }
+  });
 }
 
 function buildSemrushUrl(apiKey: string, params: Record<string, string | undefined>) {
@@ -274,8 +272,4 @@ function readOptionalString(value: unknown) {
 function stringifyOptionalInteger(value: unknown) {
   const integer = optionalIntegerLike(value, "integer");
   return integer === undefined ? undefined : String(integer);
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && error.name === "AbortError";
 }

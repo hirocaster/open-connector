@@ -1,9 +1,17 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 
 import { optionalBoolean, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
 import {
   defineProviderExecutors,
+  defineProviderProxy,
+  isAbortLikeError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
   requireApiKeyCredential,
@@ -71,7 +79,7 @@ export const checklyActionHandlers: ProviderActionHandlers<"checkly", ChecklyHan
           phase: "execute",
         }),
         "checkly check status response",
-        providerError,
+        providerResponseError,
       ),
     };
   },
@@ -96,7 +104,7 @@ export const checklyActionHandlers: ProviderActionHandlers<"checkly", ChecklyHan
           phase: "execute",
         }),
         "checkly check result response",
-        providerError,
+        providerResponseError,
       ),
     };
   },
@@ -127,7 +135,7 @@ export const credentialValidators: CredentialValidators = {
     const account = requiredRecord(
       await requestChecklyJson({ context, path: "/v1/accounts/me", phase: "validate" }),
       "checkly account response",
-      providerError,
+      providerResponseError,
     );
     const accountId = optionalString(account.id) ?? context.accountId;
 
@@ -148,6 +156,26 @@ export const credentialValidators: CredentialValidators = {
     };
   },
 };
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: apiBaseUrl,
+  auth: {
+    type: "credential_headers",
+    headers: [
+      { name: "authorization", source: { type: "api_key" }, prefix: "Bearer " },
+      { name: "x-checkly-account", source: { type: "credential_value", name: "accountId" }, optional: true },
+    ],
+  },
+  customizeRequest({ credential, headers }) {
+    if (!credential || credential.authType !== "api_key") {
+      throw new ProviderRequestError(401, "Configure Checkly credentials.");
+    }
+    headers.set("x-checkly-account", resolveAccountId(credential.values.accountId, credential.metadata.accountId));
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
+  skipDnsValidation: true,
+});
 
 async function requestChecklyJson(input: {
   context: ChecklyContext;
@@ -248,16 +276,8 @@ function requireArray(value: unknown, label: string): unknown[] {
   return value;
 }
 
-function resolveAccountId(value: unknown): string {
-  const accountId = optionalString(value);
+function resolveAccountId(value: unknown, fallback?: unknown): string {
+  const accountId = optionalString(value) ?? optionalString(fallback);
   if (!accountId) throw new ProviderRequestError(400, "checkly accountId is required");
   return accountId;
-}
-
-function providerError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
 }

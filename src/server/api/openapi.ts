@@ -1,11 +1,13 @@
 import type { ActionDefinition, JsonSchema, ProviderDefinition } from "../../core/types.ts";
 
+import { z } from "zod";
 import { jsonSchema } from "../../core/json-schema.ts";
 import {
   actionInputMaxDepth,
   idempotencyKeyMaxBytes,
   idempotencyRetentionHours,
 } from "../actions/action-idempotency.ts";
+import { oauthConnectionInput, apiKeyConnectionInput, customConnectionInput } from "./connection-input.ts";
 import { policyRequestMaxBytes, policyRuleListMaxItems, policyRuleMaxBytes } from "./policy-input.ts";
 
 /**
@@ -162,6 +164,24 @@ const idempotencyKeyParameter = {
 const idempotencyConflictDescription =
   "For idempotency, idempotency_request_in_progress means the original request is still running or its outcome is uncertain, while idempotency_key_conflict means the key was reused for a different action, input, effective connection, or stored runtime token. Other runtime conflicts may return their own error code with the same status.";
 
+const runtimeConnectionProperties: Record<string, JsonSchema> = {
+  id: jsonSchema.string({ description: "Stable local connection identifier." }),
+  service: jsonSchema.string({ description: "Provider service identifier." }),
+  status: { type: "string", enum: ["active", "disconnected"] },
+  alias: jsonSchema.string({ description: namedConnectionDescription }),
+  authType: jsonSchema.string({ description: "Connection authentication type." }),
+  displayName: jsonSchema.string({ description: "Human-readable account label." }),
+  accountLabel: jsonSchema.string({
+    description: "Same value as displayName. Kept for existing /v1 clients.",
+  }),
+  isDefault: jsonSchema.boolean({
+    description: "Whether this is the default connection. Same fact as MCP default.",
+  }),
+  scopes: jsonSchema.array(jsonSchema.string(), {
+    description: "Granted scopes. Same fact as MCP profile.grantedScopes.",
+  }),
+};
+
 /**
  * Build OpenAPI docs from the generated catalog.
  *
@@ -265,6 +285,7 @@ export function createOpenApiDocument(
       data: jsonSchema.array({ $ref: "#/components/schemas/ActionSearchResult" }),
       errorStatuses: [400],
     }),
+    ...connectionManagementPaths(),
     "/v1/apps": runtimeGetOperation("Connections", "List connected accounts.", {
       description:
         "RuntimeConnectedApp rows, not the provider catalog. Use GET /v1/providers or MCP list_apps for providers.",
@@ -386,7 +407,6 @@ export function createOpenApiDocument(
             description: "A single action returned by fuzzy keyword search.",
           },
         ),
-        ActionSearchRuntimeResult: { $ref: "#/components/schemas/ActionSearchResult" },
         RuntimeProviderMetadata: jsonSchema.object(
           {
             service: jsonSchema.string({ description: "Provider service identifier." }),
@@ -473,39 +493,20 @@ export function createOpenApiDocument(
             description: "Public runtime action metadata.",
           },
         ),
-        RuntimeConnectedApp: jsonSchema.object(
-          {
-            id: jsonSchema.string({ description: "Stable local connection identifier." }),
-            service: jsonSchema.string({ description: "Provider service identifier." }),
-            status: { type: "string", enum: ["active", "disconnected"] },
-            alias: jsonSchema.string({ description: namedConnectionDescription }),
-            authType: jsonSchema.string({ description: "Connection authentication type." }),
-            displayName: jsonSchema.string({ description: "Human-readable account label." }),
-            accountLabel: jsonSchema.string({
-              description: "Same value as displayName. Kept for existing /v1 clients.",
-            }),
-            isDefault: jsonSchema.boolean({
-              description: "Whether this is the default connection. Same fact as MCP default.",
-            }),
-            scopes: jsonSchema.array(jsonSchema.string(), {
-              description: "Granted scopes. Same fact as MCP profile.grantedScopes.",
-            }),
-          },
-          {
-            required: [
-              "id",
-              "service",
-              "status",
-              "alias",
-              "authType",
-              "displayName",
-              "accountLabel",
-              "isDefault",
-              "scopes",
-            ],
-            description: "Connected account from GET /v1/apps.",
-          },
-        ),
+        RuntimeConnectedApp: jsonSchema.object(runtimeConnectionProperties, {
+          required: [
+            "id",
+            "service",
+            "status",
+            "alias",
+            "authType",
+            "displayName",
+            "accountLabel",
+            "isDefault",
+            "scopes",
+          ],
+          description: "Connected account from GET /v1/apps.",
+        }),
         ConnectionSummary: jsonSchema.object(
           {
             id: jsonSchema.string({ description: "Stable local connection identifier." }),
@@ -716,7 +717,6 @@ export function createOpenApiDocument(
             completedAt: jsonSchema.string({ description: "Completion timestamp." }),
             durationMs: jsonSchema.number({ description: "Run duration in milliseconds." }),
             ok: jsonSchema.boolean({ description: "Whether the run succeeded." }),
-            connectionName: jsonSchema.string({ description: "Named provider connection used by the action." }),
             connectionProfile: jsonSchema.unknownObject(
               "Provider account identity that the action used, when a connection was available.",
             ),
@@ -1198,6 +1198,7 @@ function createProxyPath(): Record<string, unknown> {
           ),
         ),
         400: jsonResponse(runtimeFailureSchema()),
+        402: jsonResponse(runtimeFailureSchema()),
         403: jsonResponse(runtimeFailureSchema()),
         404: jsonResponse(runtimeFailureSchema()),
         409: jsonResponse(runtimeFailureSchema()),
@@ -1280,6 +1281,9 @@ function createOAuthAuthorizationPath(): Record<string, unknown> {
                 requestedScopes: jsonSchema.array(jsonSchema.string(), {
                   minItems: 1,
                   description: "Optional non-empty provider-declared scope subset to request.",
+                }),
+                authorizationOptionIds: jsonSchema.array(jsonSchema.string(), {
+                  description: "Optional provider authorization option ids selected for this connection.",
                 }),
                 extra: {
                   type: "object",
@@ -1381,7 +1385,7 @@ interface RuntimeGetOperationOptions {
   data: JsonSchema;
   description?: string;
   parameters?: unknown[];
-  errorStatuses?: Array<400 | 404>;
+  errorStatuses?: Array<400 | 401 | 403 | 404>;
 }
 
 function runtimeGetOperation(
@@ -1438,9 +1442,11 @@ function actionRunResponses(output: JsonSchema): Record<string, unknown> {
   return {
     200: jsonResponse(runtimeSuccessSchema(output, actionResultMetaSchema)),
     400: jsonResponse(failure, "invalid_input, action_blocked, or action_not_allowed."),
+    402: jsonResponse(failure, "insufficient_credit."),
     403: jsonResponse(failure, "authorization_failed."),
     404: jsonResponse(failure, "unknown_action or connection_not_found."),
     409: jsonResponse(failure, idempotencyConflictDescription),
+    413: jsonResponse(failure, "The provider response exceeded the runtime size limit, or the upstream answered 413."),
     429: jsonResponse(failure),
     500: jsonResponse(failure),
   };
@@ -1525,4 +1531,95 @@ function jsonResponse(schema: JsonSchema, description = "JSON response."): Recor
       },
     },
   };
+}
+
+function connectionManagementPaths(): Record<string, unknown> {
+  const app = jsonSchema.object("A stored connection visible to the administrator.", {
+    ...runtimeConnectionProperties,
+    status: jsonSchema.stringEnum("Current connection state.", ["active", "reauth_required", "error", "disconnected"]),
+    providerAccountId: jsonSchema.string("The provider account identifier."),
+    comment: jsonSchema.nullableString("An optional administrator note."),
+  });
+  const start = jsonSchema.object("An OAuth authorization attempt. Poll connectionRequestId to obtain its result.", {
+    authorizationUrl: jsonSchema.string(),
+    stateHandle: jsonSchema.string(),
+    connectionRequestId: jsonSchema.string(),
+    status: jsonSchema.literal("initiated"),
+    expiresAt: jsonSchema.string(),
+  });
+  const request = jsonSchema.object(
+    "One authorization attempt; results remain available until expiresAt plus 24 hours.",
+    {
+      connectionRequestId: jsonSchema.string(),
+      service: jsonSchema.string(),
+      status: jsonSchema.stringEnum("Authorization request status.", ["initiated", "connected", "failed", "expired"]),
+      appId: jsonSchema.nullableString("The exact connection created or reconnected."),
+      errorCode: jsonSchema.nullableString("Safe failure code, including request_superseded."),
+      errorMessage: jsonSchema.nullableString("Safe failure message."),
+      expiresAt: jsonSchema.string(),
+      createdAt: jsonSchema.number(),
+      updatedAt: jsonSchema.number(),
+    },
+  );
+  const parameter = (name: string): unknown => ({ name, in: "path", required: true, schema: { type: "string" } });
+  const paths: Record<string, unknown> = {
+    "/v1/connections": runtimeGetOperation("Connections", "List manageable connections.", {
+      parameters: [
+        queryParameter(
+          "status",
+          "Filter by current connection state.",
+          jsonSchema.stringEnum("Connection state.", ["active", "reauth_required", "error", "disconnected"]),
+        ),
+      ],
+      data: jsonSchema.array(app),
+      errorStatuses: [401, 403],
+    }),
+    "/v1/connections/by-id/{appId}": runtimeGetOperation("Connections", "Get the current connection state.", {
+      data: app,
+      parameters: [parameter("appId")],
+      errorStatuses: [401, 403, 404],
+    }),
+    "/v1/connection-requests/{connectionRequestId}": runtimeGetOperation(
+      "Connections",
+      "Get an OAuth authorization result.",
+      {
+        data: request,
+        parameters: [parameter("connectionRequestId")],
+        errorStatuses: [401, 403, 404],
+        description:
+          "Requires the initiating management principal. A consumed callback does not remove the result. Responses use Cache-Control: private, no-store.",
+      },
+    ),
+  };
+  for (const reconnect of [false, true]) {
+    const base = reconnect ? "/v1/connections/by-id/{appId}/connect" : "/v1/connections/{service}/connect";
+    for (const [suffix, input, output] of [
+      ["", oauthConnectionInput, start],
+      ["/api-key", apiKeyConnectionInput, app],
+      ["/custom-credential", customConnectionInput, app],
+    ] as const) {
+      paths[`${base}${suffix}`] = {
+        post: {
+          tags: ["Connections"],
+          summary: `${reconnect ? "Reconnect" : "Create"} ${suffix || "OAuth"} connection.`,
+          description:
+            "Requires administrator credentials. OAuth returns an authorization request; API key and custom credentials return the saved connection synchronously.",
+          parameters: [parameter(reconnect ? "appId" : "service")],
+          requestBody: {
+            required: Boolean(suffix),
+            content: { "application/json": { schema: z.toJSONSchema(input) } },
+          },
+          responses: {
+            200: jsonResponse(runtimeSuccessSchema(output)),
+            400: jsonResponse(runtimeFailureSchema()),
+            401: jsonResponse(runtimeFailureSchema()),
+            403: jsonResponse(runtimeFailureSchema()),
+            404: jsonResponse(runtimeFailureSchema()),
+            409: jsonResponse(runtimeFailureSchema()),
+          },
+        },
+      };
+    }
+  }
+  return paths;
 }

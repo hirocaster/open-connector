@@ -13,7 +13,15 @@ import type {
 import type { ProviderActionNames } from "./action-contracts.generated.ts";
 
 import { Buffer } from "node:buffer";
-import { CastError, optionalRecord, optionalScalarString, optionalString, requiredString } from "../core/cast.ts";
+import {
+  CastError,
+  optionalRecord,
+  optionalScalarString,
+  optionalString,
+  requiredNumber,
+  requiredRecord,
+  requiredString,
+} from "../core/cast.ts";
 import { createGuardedFetch } from "../core/guarded-fetch.ts";
 import { readBoundedResponseBytes } from "../core/request.ts";
 
@@ -200,9 +208,26 @@ export interface ApiKeyProviderContext {
   signal?: AbortSignal;
 }
 
+/**
+ * Request an API-key provider action handler receives: the resolved key, the
+ * provider-local action name, the schema-validated action input, the full
+ * credential field map (`values` also carries `apiKey`) and the runtime
+ * metadata the credential validator stored on the connection. Executors pass
+ * every field; the optional markers only let provider-local helpers accept a
+ * narrower request.
+ */
+export interface ApiKeyActionRequest {
+  apiKey: string;
+  actionName: string;
+  input: Record<string, unknown>;
+  providerMetadata?: Record<string, unknown>;
+  values?: Record<string, string>;
+}
+
 export interface OAuthProviderContext {
   accessToken: string;
   tokenType?: string;
+  accountId?: string;
   providerSecret?: Record<string, unknown>;
   fetcher: ProviderFetch;
   transitFiles?: TransitFileWriter;
@@ -239,12 +264,57 @@ export interface ProviderInputFile {
 export class ProviderRequestError extends Error {
   readonly status: number;
   readonly details?: unknown;
+  readonly code?: string;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(status: number, message: string, details?: unknown, code?: string) {
     super(message);
     this.status = status;
     this.details = details;
+    this.code = code;
   }
+}
+
+/**
+ * Return the 400 error providers throw for invalid action input or credentials.
+ * The message is surfaced verbatim as the `invalid_input` execution error.
+ */
+export function providerInputError(message: string): ProviderRequestError {
+  return new ProviderRequestError(400, message);
+}
+
+/**
+ * Return the 502 error providers throw for an upstream response they cannot
+ * use. The message is surfaced verbatim as the `provider_error` execution error.
+ */
+export function providerResponseError(message: string): ProviderRequestError {
+  return new ProviderRequestError(502, message);
+}
+
+/**
+ * Read a required string action input, raising the 400 error providers map
+ * missing or blank fields to. Example: `requiredInputString(" x ", "name") => "x"`;
+ * `requiredInputString("", "name")` throws `name is required.`.
+ */
+export function requiredInputString(value: unknown, fieldName: string): string {
+  return requiredString(value, fieldName, providerInputError);
+}
+
+/**
+ * Read a required number action input, raising the 400 error providers map
+ * missing or non-numeric fields to. Example: `requiredInputNumber(1.5, "weight") => 1.5`;
+ * `requiredInputNumber("x", "weight")` throws `weight must be a number`.
+ */
+export function requiredInputNumber(value: unknown, fieldName: string): number {
+  return requiredNumber(value, fieldName, providerInputError);
+}
+
+/**
+ * Read a record out of an upstream response, raising the 502 error providers
+ * map malformed payloads to. Example: `requiredResponseRecord([], "payload")`
+ * throws `payload must be an object`.
+ */
+export function requiredResponseRecord(value: unknown, label: string): Record<string, unknown> {
+  return requiredRecord(value, label, providerResponseError);
 }
 
 export interface ProviderTimeout {
@@ -253,20 +323,35 @@ export interface ProviderTimeout {
   cleanup(): void;
 }
 
-export interface BearerProviderProxyDefinition {
-  service: string;
-  baseUrl: string;
-  allowedEndpoint?: (endpoint: string) => boolean;
+export type ProviderProxyCredentialHeaderSource =
+  | { type: "api_key" }
+  | { type: "credential_value"; name: string }
+  | { type: "credential_metadata"; name: string };
+
+export interface ProviderProxyCredentialHeader {
+  name: string;
+  source: ProviderProxyCredentialHeaderSource;
+  prefix?: string;
+  suffix?: string;
+  optional?: boolean;
 }
 
 export type ProviderProxyAuth =
   | { type: "none" }
   | { type: "bearer" }
   | { type: "oauth_bearer" }
+  | { type: "oauth_query"; name: string }
   | { type: "api_key_header"; name: string }
   | { type: "api_key_query"; name: string }
+  | { type: "optional_api_key_header"; name: string; prefix?: string }
+  | { type: "optional_api_key_query"; name: string }
+  | { type: "api_key_json_body"; name: string }
+  | { type: "api_key_query_or_json_body"; name: string; bodyMethods?: readonly string[] }
+  | { type: "api_key_query_or_form_body"; name: string; bodyMethods?: readonly string[] }
   | { type: "api_key_basic"; suffix?: string }
-  | { type: "api_key_authorization"; prefix: string; suffix?: string };
+  | { type: "api_key_authorization"; prefix: string; suffix?: string }
+  | { type: "custom_credential_header"; field: string; name: string; prefix?: string }
+  | { type: "credential_headers"; headers: readonly ProviderProxyCredentialHeader[] };
 
 export type ProviderProxyBaseUrlResolver = (context: ExecutionContext, service: string) => Promise<string> | string;
 export type ProviderProxyBaseUrl = string | ProviderProxyBaseUrlResolver;
@@ -275,8 +360,11 @@ export interface ProviderProxyRequestCustomizationInput {
   context: ExecutionContext;
   service: string;
   endpoint: string;
+  method: string;
   url: URL;
   headers: Headers;
+  body: unknown;
+  setBody(body: unknown): void;
   credential?: ResolvedCredential;
   /** Guarded fetcher used by the proxy for provider-owned auxiliary requests such as token exchange. */
   fetcher: typeof fetch;
@@ -288,12 +376,20 @@ export interface ProviderProxyDefinition {
   auth: ProviderProxyAuth;
   allowedEndpoint?: (endpoint: string) => boolean;
   customizeRequest?: (input: ProviderProxyRequestCustomizationInput) => Promise<void> | void;
+  /** Provider-specific credential/signature headers that redirects must not forward cross-origin. */
+  sensitiveHeaders?: readonly string[];
   /** Exact code-controlled origins that `customizeRequest` may select in addition to the resolved base origin. */
   allowedOrigins?: readonly string[];
   /** Deployment-gated private-network opt-in applied to this proxy's egress fetch (currently Dokploy). */
   allowPrivateNetwork?: () => boolean;
   /** Skip the redundant DNS resolved-address check; only for hardcoded-base-URL proxies. */
   skipDnsValidation?: boolean;
+  /** Deliberate provider-specific timeout override; defaults to the shared 30-second budget. */
+  timeoutMs?: number;
+  /** Native redirect policy override; guarded manual following remains the default. */
+  redirect?: RequestRedirect;
+  /** Deliberate provider-specific response byte cap; defaults to the shared 20 MiB limit. */
+  maxResponseBytes?: number;
 }
 
 const blockedProxyRequestHeaders = new Set([
@@ -306,24 +402,40 @@ const blockedProxyRequestHeaders = new Set([
 const defaultProviderProxyMaxResponseBytes = 20 * 1024 * 1024;
 const defaultProviderJsonMaxResponseBytes = 20 * 1024 * 1024;
 const defaultProviderErrorMaxResponseBytes = 64 * 1024;
+const defaultProviderRequestTimeoutMs = 30_000;
 
-export function createProviderProxyUrl(baseUrl: string, endpointInput: unknown, queryInput?: unknown): URL {
-  const endpoint = normalizeProviderProxyEndpoint(endpointInput);
+export function createProviderProxyUrl(
+  baseUrl: string,
+  endpointInput: unknown,
+  queryInput?: unknown,
+  allowedOrigins?: readonly string[],
+): URL {
+  const endpoint = normalizeProviderProxyEndpoint(endpointInput, allowedOrigins);
   const base = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
-  const url = new URL(`./${endpoint.slice(1)}`, base);
-  if (url.origin !== base.origin) {
-    throw new ProviderRequestError(400, "endpoint must stay on the provider origin");
-  }
+  const url = endpoint.startsWith("/") ? new URL(`./${endpoint.slice(1)}`, base) : new URL(endpoint);
   for (const [key, value] of Object.entries(normalizeProviderProxyQuery(queryInput))) {
     url.searchParams.set(key, value);
   }
   return url;
 }
 
-export function normalizeProviderProxyEndpoint(endpointInput: unknown): string {
+export function normalizeProviderProxyEndpoint(endpointInput: unknown, allowedOrigins?: readonly string[]): string {
   const endpoint = requiredString(endpointInput, "endpoint", (message) => new ProviderRequestError(400, message));
   if (!endpoint.startsWith("/") || endpoint.startsWith("//")) {
-    throw new ProviderRequestError(400, "endpoint must be a relative path starting with /");
+    let absolute: URL;
+    try {
+      absolute = new URL(endpoint);
+    } catch {
+      throw new ProviderRequestError(400, "endpoint must be a relative path or an allowed absolute HTTPS URL");
+    }
+    const origins = new Set(allowedOrigins?.map((value) => new URL(value).origin));
+    if (absolute.protocol !== "https:" || absolute.username || absolute.password || !origins.has(absolute.origin)) {
+      throw new ProviderRequestError(400, "absolute endpoint origin is not allowed");
+    }
+    if (endpoint.includes("\\") || hasPathTraversalSegment(absolute.pathname)) {
+      throw new ProviderRequestError(400, "endpoint must not contain path traversal segments");
+    }
+    return absolute.toString();
   }
   try {
     const url = new URL(endpoint.slice(1));
@@ -386,6 +498,18 @@ export function normalizeProviderProxyHeaders(headersInput: unknown): Headers {
     }
   }
   return headers;
+}
+
+/**
+ * Build an HTTP Basic `authorization` header value from an already composed
+ * credential, usually `user:password` but also a bare API key or a key with a
+ * provider-specific suffix. RFC 7617 encodes the credential from its UTF-8
+ * bytes, so this is the only correct way to build the header: `btoa` understands
+ * Latin-1 only, which silently sends the wrong bytes for accented credentials
+ * and throws on anything outside Latin-1.
+ */
+export function basicAuthorizationHeader(value: string): string {
+  return `Basic ${Buffer.from(value, "utf8").toString("base64")}`;
 }
 
 export interface ReadProviderProxyResponseOptions {
@@ -471,65 +595,89 @@ export function toProviderProxyError(error: unknown, fallbackMessage: string): P
 
 export function defineProviderProxy(input: ProviderProxyDefinition): ProviderProxyExecutor {
   const allowedOrigins = new Set(input.allowedOrigins?.map((value) => new URL(value).origin));
-  const additionalSensitiveHeaders = input.auth.type === "api_key_header" ? [input.auth.name] : undefined;
+  const authSensitiveHeaders =
+    input.auth.type === "credential_headers"
+      ? [...new Set(input.auth.headers.map((header) => header.name.toLowerCase()))]
+      : input.auth.type === "api_key_header" ||
+          input.auth.type === "optional_api_key_header" ||
+          input.auth.type === "custom_credential_header"
+        ? [input.auth.name]
+        : undefined;
+  const additionalSensitiveHeaders = [...(authSensitiveHeaders ?? []), ...(input.sensitiveHeaders ?? [])];
   const egressFetch = createProviderFetch({
     allowPrivateNetwork: input.allowPrivateNetwork,
     skipDnsValidation: input.skipDnsValidation,
-    additionalSensitiveHeaders,
+    additionalSensitiveHeaders: additionalSensitiveHeaders.length > 0 ? additionalSensitiveHeaders : undefined,
   });
   return async (proxyInput: ProxyRequestInput, context: ExecutionContext): Promise<ProxyExecutionResult> => {
     try {
-      const endpoint = normalizeProviderProxyEndpoint(proxyInput.endpoint);
+      const baseUrl = await resolveProviderProxyBaseUrl(input.baseUrl, context, input.service);
+      const endpointOrigins = [baseUrl, ...(input.allowedOrigins ?? [])];
+      const endpoint = normalizeProviderProxyEndpoint(proxyInput.endpoint, endpointOrigins);
       if (input.allowedEndpoint && !input.allowedEndpoint(endpoint)) {
         throw new ProviderRequestError(400, "endpoint is not supported for this provider");
       }
 
-      const url = createProviderProxyUrl(
-        await resolveProviderProxyBaseUrl(input.baseUrl, context, input.service),
-        endpoint,
-        proxyInput.query,
-      );
+      const url = createProviderProxyUrl(baseUrl, endpoint, proxyInput.query, endpointOrigins);
       const providerOrigin = url.origin;
       const headers = normalizeProviderProxyHeaders(proxyInput.headers);
       headers.set("user-agent", providerUserAgent);
-      const credential = await applyProviderProxyAuth(input, context, url, headers);
+      const authResult = await applyProviderProxyAuth(input, context, url, headers, proxyInput.method, proxyInput.body);
+      let requestBody = authResult.body;
       await input.customizeRequest?.({
         context,
         service: input.service,
         endpoint,
+        method: proxyInput.method,
         url,
         headers,
-        credential,
+        body: requestBody,
+        setBody(body) {
+          requestBody = body;
+        },
+        credential: authResult.credential,
         fetcher: egressFetch,
       });
       if (url.origin !== providerOrigin && !allowedOrigins.has(url.origin)) {
         throw new ProviderRequestError(400, "endpoint must stay on the provider origin");
       }
 
-      const init: RequestInit = {
-        method: proxyInput.method,
-        headers,
-        signal: context.signal,
-      };
-      if (proxyInput.body !== undefined) {
-        init.body = typeof proxyInput.body === "string" ? proxyInput.body : JSON.stringify(proxyInput.body);
-        if (!headers.has("content-type") && typeof proxyInput.body !== "string") {
-          headers.set("content-type", "application/json");
+      const timeout = createProviderTimeout(context.signal, input.timeoutMs);
+      try {
+        const init: RequestInit = {
+          method: proxyInput.method,
+          headers,
+          redirect: input.redirect,
+          signal: timeout.signal,
+        };
+        if (requestBody !== undefined) {
+          init.body = typeof requestBody === "string" ? requestBody : JSON.stringify(requestBody);
+          if (!headers.has("content-type") && typeof requestBody !== "string") {
+            headers.set("content-type", "application/json");
+          }
         }
-      }
 
-      const response = await egressFetch(url, init);
-      if (!response.ok) {
-        throw new ProviderRequestError(
-          response.status,
-          await readProviderProxyErrorMessage(response, `provider request failed with HTTP ${response.status}`),
-        );
-      }
+        const response = await egressFetch(url, init);
+        if (!response.ok) {
+          throw new ProviderRequestError(
+            response.status,
+            await readProviderProxyErrorMessage(response, `provider request failed with HTTP ${response.status}`),
+          );
+        }
 
-      return {
-        ok: true,
-        response: await readProviderProxyResponse(response),
-      };
+        return {
+          ok: true,
+          response: await readProviderProxyResponse(response, { maxBytes: input.maxResponseBytes }),
+        };
+      } catch (error) {
+        // Only the local budget becomes the shared 504 timeout; a caller abort stays an abort.
+        if (error instanceof ProviderRequestError || !timeout.didTimeout()) {
+          throw error;
+        }
+        throw new ProviderRequestError(504, `${input.service} request timed out`);
+      } finally {
+        timeout.cleanup();
+      }
     } catch (error) {
       return toProviderProxyError(error, "provider request failed");
     }
@@ -540,13 +688,6 @@ export function defineProviderProxy(input: ProviderProxyDefinition): ProviderPro
 export function providerProxyEndpointPrefixes(...prefixes: string[]): (endpoint: string) => boolean {
   return (endpoint) =>
     prefixes.some((prefix) => endpoint === prefix || endpoint.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`));
-}
-
-export function defineBearerProviderProxy(input: BearerProviderProxyDefinition): ProviderProxyExecutor {
-  return defineProviderProxy({
-    ...input,
-    auth: { type: "bearer" },
-  });
 }
 
 export function credentialProviderProxyBaseUrl(...fields: string[]): ProviderProxyBaseUrlResolver {
@@ -586,48 +727,201 @@ async function applyProviderProxyAuth(
   context: ExecutionContext,
   url: URL,
   headers: Headers,
-): Promise<ResolvedCredential | undefined> {
+  method: string,
+  body: unknown,
+): Promise<ProviderProxyAuthResult> {
   switch (input.auth.type) {
     case "none":
-      return undefined;
+      return { credential: undefined, body };
     case "bearer": {
       const credential = await requireBearerCredential(context, input.service);
       headers.set("authorization", `${credential.tokenType} ${credential.accessToken}`);
-      return undefined;
+      return { credential: undefined, body };
     }
     case "oauth_bearer": {
       const credential = await requireOAuthCredential(context, input.service);
       headers.set("authorization", `${credential.tokenType} ${credential.accessToken}`);
-      return credential;
+      return { credential, body };
+    }
+    case "oauth_query": {
+      const credential = await requireOAuthCredential(context, input.service);
+      url.searchParams.set(input.auth.name, credential.accessToken);
+      return { credential, body };
     }
     case "api_key_header": {
       const credential = await requireApiKeyCredential(context, input.service);
       headers.set(input.auth.name, credential.apiKey);
-      return credential;
+      return { credential, body };
     }
     case "api_key_query": {
       const credential = await requireApiKeyCredential(context, input.service);
       url.searchParams.set(input.auth.name, credential.apiKey);
-      return credential;
+      return { credential, body };
+    }
+    case "optional_api_key_header": {
+      const credential = await optionalProviderProxyApiKeyCredential(context, input.service);
+      if (credential) {
+        headers.set(input.auth.name, `${input.auth.prefix ?? ""}${credential.apiKey}`);
+      } else {
+        headers.delete(input.auth.name);
+      }
+      return { credential, body };
+    }
+    case "optional_api_key_query": {
+      const credential = await optionalProviderProxyApiKeyCredential(context, input.service);
+      if (credential) {
+        url.searchParams.set(input.auth.name, credential.apiKey);
+      } else {
+        url.searchParams.delete(input.auth.name);
+      }
+      return { credential, body };
+    }
+    case "api_key_json_body": {
+      const credential = await requireApiKeyCredential(context, input.service);
+      return { credential, body: injectProviderProxyJsonBodyField(body, input.auth.name, credential.apiKey) };
+    }
+    case "api_key_query_or_json_body": {
+      const credential = await requireApiKeyCredential(context, input.service);
+      if (providerProxyBodyMethods(input.auth.bodyMethods).has(method.toUpperCase())) {
+        url.searchParams.delete(input.auth.name);
+        return { credential, body: injectProviderProxyJsonBodyField(body, input.auth.name, credential.apiKey) };
+      }
+      url.searchParams.set(input.auth.name, credential.apiKey);
+      return { credential, body };
+    }
+    case "api_key_query_or_form_body": {
+      const credential = await requireApiKeyCredential(context, input.service);
+      if (providerProxyBodyMethods(input.auth.bodyMethods).has(method.toUpperCase())) {
+        url.searchParams.delete(input.auth.name);
+        headers.set("content-type", "application/x-www-form-urlencoded;charset=UTF-8");
+        return { credential, body: injectProviderProxyFormBodyField(body, input.auth.name, credential.apiKey) };
+      }
+      url.searchParams.set(input.auth.name, credential.apiKey);
+      return { credential, body };
     }
     case "api_key_basic": {
       const credential = await requireApiKeyCredential(context, input.service);
-      headers.set("authorization", `Basic ${btoa(`${credential.apiKey}${input.auth.suffix ?? ""}`)}`);
-      return credential;
+      headers.set("authorization", basicAuthorizationHeader(`${credential.apiKey}${input.auth.suffix ?? ""}`));
+      return { credential, body };
     }
     case "api_key_authorization": {
       const credential = await requireApiKeyCredential(context, input.service);
       headers.set("authorization", `${input.auth.prefix}${credential.apiKey}${input.auth.suffix ?? ""}`);
-      return credential;
+      return { credential, body };
+    }
+    case "custom_credential_header": {
+      const credential = await requireCustomCredential(context, input.service);
+      const value = credential.values[input.auth.field];
+      if (!value) {
+        throw new ProviderRequestError(
+          401,
+          `Configure ${input.service} custom credential field ${input.auth.field} first.`,
+        );
+      }
+      headers.set(input.auth.name, `${input.auth.prefix ?? ""}${value}`);
+      return { credential, body };
+    }
+    case "credential_headers": {
+      const credential = await context.getCredential(input.service);
+      if (!credential || credential.authType === "no_auth") {
+        throw new ProviderRequestError(401, `Configure ${input.service} credentials first.`);
+      }
+      for (const header of input.auth.headers) {
+        const value = readProviderProxyCredentialHeaderValue(credential, header.source, input.service);
+        if (!value) {
+          if (header.optional) {
+            headers.delete(header.name);
+            continue;
+          }
+          throw new ProviderRequestError(
+            401,
+            `Configure ${input.service} credential field ${providerProxyCredentialHeaderSourceName(header.source)} first.`,
+          );
+        }
+        headers.set(header.name, `${header.prefix ?? ""}${value}${header.suffix ?? ""}`);
+      }
+      return { credential, body };
     }
   }
 }
 
+interface ProviderProxyAuthResult {
+  credential: ResolvedCredential | undefined;
+  body: unknown;
+}
+
+async function optionalProviderProxyApiKeyCredential(
+  context: ExecutionContext,
+  service: string,
+): Promise<Extract<ResolvedCredential, { authType: "api_key" }> | undefined> {
+  const credential = await context.getCredential(service);
+  if (!credential || credential.authType === "no_auth") return undefined;
+  if (credential.authType === "api_key") return credential;
+  throw new ProviderRequestError(401, `Connect ${service} without authentication or configure an API key.`);
+}
+
+function providerProxyBodyMethods(methods: readonly string[] | undefined): Set<string> {
+  return new Set((methods ?? ["POST", "PUT", "PATCH"]).map((method) => method.toUpperCase()));
+}
+
+function injectProviderProxyJsonBodyField(body: unknown, name: string, value: string): Record<string, unknown> {
+  if (body == null) return { [name]: value };
+  if (typeof body !== "object" || Array.isArray(body)) {
+    throw new ProviderRequestError(400, `${name} proxy auth requires a JSON object body`);
+  }
+  return { ...body, [name]: value };
+}
+
+function injectProviderProxyFormBodyField(body: unknown, name: string, value: string): string {
+  const form = new URLSearchParams();
+  if (typeof body === "string") {
+    for (const [field, fieldValue] of new URLSearchParams(body)) form.set(field, fieldValue);
+  } else if (body != null && typeof body === "object" && !Array.isArray(body)) {
+    for (const [field, fieldValue] of Object.entries(body)) {
+      if (fieldValue != null) form.set(field, String(fieldValue));
+    }
+  } else if (body != null) {
+    throw new ProviderRequestError(400, `${name} proxy auth requires a form-compatible body`);
+  }
+  form.set(name, value);
+  return form.toString();
+}
+
+function readProviderProxyCredentialHeaderValue(
+  credential: Exclude<ResolvedCredential, { authType: "no_auth" }>,
+  source: ProviderProxyCredentialHeaderSource,
+  service: string,
+): string | undefined {
+  switch (source.type) {
+    case "api_key":
+      if (credential.authType !== "api_key") {
+        throw new ProviderRequestError(401, `${service} proxy requires an API key credential.`);
+      }
+      return credential.apiKey;
+    case "credential_value":
+      if (credential.authType !== "api_key" && credential.authType !== "custom_credential") {
+        throw new ProviderRequestError(401, `${service} proxy requires an API key or custom credential.`);
+      }
+      return credential.values[source.name];
+    case "credential_metadata":
+      return optionalString(credential.metadata[source.name])?.trim();
+  }
+}
+
+function providerProxyCredentialHeaderSourceName(source: ProviderProxyCredentialHeaderSource): string {
+  return source.type === "api_key" ? "apiKey" : source.name;
+}
+
 /**
  * Return an abort signal that fires when either the parent signal aborts or the
- * provider-local timeout expires.
+ * provider-local timeout expires. The timeout defaults to 30 seconds, the value
+ * almost every provider request uses; pass `timeoutMs` only for endpoints that
+ * genuinely need a different budget.
  */
-export function createProviderTimeout(parentSignal: AbortSignal | undefined, timeoutMs: number): ProviderTimeout {
+export function createProviderTimeout(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number = defaultProviderRequestTimeoutMs,
+): ProviderTimeout {
   const controller = new AbortController();
   let timeoutReached = false;
   const timeoutId = setTimeout(() => {
@@ -651,17 +945,64 @@ export function createProviderTimeout(parentSignal: AbortSignal | undefined, tim
 }
 
 /**
- * Return whether a caught error represents a fetch abort.
+ * Return whether a caught error represents a fetch abort: the `AbortError`
+ * raised by an aborted controller or the `TimeoutError` raised by
+ * `AbortSignal.timeout()`.
  */
 export function isAbortLikeError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
+  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }
 
 /**
- * Return whether an error came from a specific aborted signal.
+ * Return whether an error came from a specific aborted signal, counting the
+ * signal's own abort reason regardless of the name it carries.
  */
 export function isAbortSignalError(signal: AbortSignal | undefined, error: unknown): boolean {
-  return signal?.aborted === true && isAbortLikeError(error);
+  return signal?.aborted === true && (isAbortLikeError(error) || error === signal.reason);
+}
+
+/**
+ * Options for {@link runProviderRequest}.
+ */
+export interface ProviderRequestOptions {
+  /** Caller signal, usually the execution context's; aborting it aborts the request. */
+  signal?: AbortSignal;
+  /** Provider-local budget for the whole request; defaults to 30 seconds. */
+  timeoutMs?: number;
+  /** Provider name used in the timeout and failure messages, e.g. `"Skio"`. */
+  label: string;
+}
+
+/**
+ * Run a provider request under the shared timeout and error mapping.
+ *
+ * `request` receives the combined abort signal and should perform the fetch and
+ * read the body. A `ProviderRequestError` thrown inside passes through
+ * untouched; a timeout or abort becomes `504 "<label> request timed out"`; any
+ * other failure becomes `502 "<label> request failed[: <message>]"`. The
+ * timeout is always cleaned up.
+ */
+export async function runProviderRequest<T>(
+  options: ProviderRequestOptions,
+  request: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeout = createProviderTimeout(options.signal, options.timeoutMs);
+  try {
+    return await request(timeout.signal);
+  } catch (error) {
+    if (error instanceof ProviderRequestError) {
+      throw error;
+    }
+    if (timeout.didTimeout() || isAbortLikeError(error) || isAbortSignalError(timeout.signal, error)) {
+      throw new ProviderRequestError(504, `${options.label} request timed out`);
+    }
+    throw new ProviderRequestError(
+      502,
+      error instanceof Error ? `${options.label} request failed: ${error.message}` : `${options.label} request failed`,
+    );
+  } finally {
+    timeout.cleanup();
+  }
 }
 
 /**
@@ -850,13 +1191,14 @@ export function toProviderExecutionError(error: unknown, fallbackMessage: string
       ok: false,
       error: {
         code:
-          error.status === 401 || error.status === 403
+          error.code ??
+          (error.status === 401 || error.status === 403
             ? "authorization_failed"
             : error.status === 429
               ? "rate_limited"
               : error.status < 500
                 ? "invalid_input"
-                : "provider_error",
+                : "provider_error"),
         message: error.message,
         details: {
           status: error.status,
@@ -974,6 +1316,7 @@ export function defineOAuthProviderExecutors(
       const providerContext: OAuthProviderContext = {
         accessToken: credential.accessToken,
         tokenType: credential.tokenType,
+        accountId: credential.profile.accountId,
         providerSecret: credential.providerSecret,
         fetcher,
         signal: context.signal,

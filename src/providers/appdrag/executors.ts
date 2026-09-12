@@ -12,7 +12,9 @@ import {
   createProviderFetch,
   createProviderProxyUrl,
   defineApiKeyProviderExecutors,
+  isAbortLikeError,
   normalizeProviderProxyHeaders,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderProxyErrorMessage,
@@ -102,8 +104,8 @@ export const credentialValidators: CredentialValidators = {
 };
 
 async function executeFunction(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
-  const folder = requiredString(input.folder, "folder", invalidInputError);
-  const functionName = requiredString(input.functionName, "functionName", invalidInputError);
+  const folder = requiredString(input.folder, "folder", providerInputError);
+  const functionName = requiredString(input.functionName, "functionName", providerInputError);
   const method = normalizeMethod(input.method);
   const environment = normalizeEnvironment(input.environment);
   const rawResponse = input.rawResponse === true;
@@ -272,7 +274,7 @@ async function requestAppdrag(
     if (error instanceof ProviderRequestError) {
       throw error;
     }
-    if (timeoutSignal.aborted && isAbortError(error)) {
+    if (timeoutSignal.aborted && isAbortLikeError(error)) {
       throw new ProviderRequestError(504, "AppDrag request timed out");
     }
 
@@ -369,12 +371,4 @@ function inferResponseFormat(body: unknown): "empty" | "json" | "text" {
     return "text";
   }
   return "json";
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

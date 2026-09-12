@@ -2,12 +2,14 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
-import { optionalNumber, optionalRecord, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
+import { optionalNumber, optionalString, requiredRecord } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
+  requiredResponseRecord,
 } from "../provider-runtime.ts";
 
 interface TushareTableData {
@@ -34,7 +36,6 @@ interface TushareRequestInput {
 type TushareActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
 export const tushareApiBaseUrl: string = "https://api.tushare.pro";
-const tushareRequestTimeoutMs = 30_000;
 
 const stockBasicFields = [
   "ts_code",
@@ -306,7 +307,7 @@ export async function validateTushareCredential(
 async function executeQueryData(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const payload = await tushareRequest(
     {
-      apiName: readRequiredTrimmedString(input.apiName, "apiName"),
+      apiName: requiredInputString(input.apiName, "apiName"),
       params: readOptionalObject(input.params, "params"),
       fields: normalizeFieldsInput(input.fields),
     },
@@ -343,7 +344,7 @@ async function tushareRequest(
   input: TushareRequestInput,
   context: Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">,
 ): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(context.signal, tushareRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(tushareApiBaseUrl, {
       method: "POST",
@@ -361,7 +362,7 @@ async function tushareRequest(
       }),
     });
     const payload = await readJsonPayload(response);
-    const envelope = readProviderObject(payload, "payload");
+    const envelope = requiredResponseRecord(payload, "payload");
     if (!response.ok) {
       throw createTushareHttpError(response.status, envelope);
     }
@@ -412,7 +413,7 @@ function createTushareApiError(code: number, payload: Record<string, unknown>): 
 }
 
 function normalizeTableData(value: unknown): TushareTableData {
-  const data = readProviderObject(value, "data");
+  const data = requiredResponseRecord(value, "data");
   return {
     fields: normalizeFields(data.fields),
     items: normalizeItems(data.items),
@@ -482,7 +483,7 @@ function normalizeFieldsInput(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value === "string") return value.trim() || undefined;
   if (Array.isArray(value)) {
-    const fields = value.map((item, index) => readRequiredTrimmedString(item, `fields[${index}]`));
+    const fields = value.map((item, index) => requiredInputString(item, `fields[${index}]`));
     return fields.length > 0 ? fields.join(",") : undefined;
   }
   throw new ProviderRequestError(400, "fields must be a string or an array of strings");
@@ -491,16 +492,6 @@ function normalizeFieldsInput(value: unknown): string | undefined {
 function readOptionalObject(value: unknown, fieldName: string): Record<string, unknown> | undefined {
   if (value === undefined) return undefined;
   return requiredRecord(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
-function readProviderObject(value: unknown, fieldName: string): Record<string, unknown> {
-  const record = optionalRecord(value);
-  if (!record) throw new ProviderRequestError(502, `${fieldName} must be an object`);
-  return record;
-}
-
-function readRequiredTrimmedString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readProviderString(value: unknown, fieldName: string): string {

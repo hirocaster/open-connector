@@ -1,12 +1,19 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { OAuthProviderContext, ProviderActionHandlers } from "../provider-runtime.ts";
 
-import { optionalBoolean, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   defineOAuthProviderExecutors,
+  defineProviderProxy,
   ProviderRequestError,
   providerUserAgent,
   readProviderJsonBody,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "reddit";
@@ -26,7 +33,7 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
     return { account: requireRedditObject(await redditRequest(context, { path: "/api/v1/me" }), "account") };
   },
   async list_posts(input, context) {
-    const subreddit = encodeURIComponent(requireInputString(input.subreddit, "subreddit"));
+    const subreddit = encodeURIComponent(requiredInputString(input.subreddit, "subreddit"));
     const sort = optionalString(input.sort) ?? "hot";
     return normalizeListing(
       await redditRequest(context, {
@@ -42,7 +49,7 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
         path: subreddit ? `/r/${encodeURIComponent(subreddit)}/search` : "/search",
         query: {
           ...buildListingQuery(input),
-          q: requireInputString(input.query, "query"),
+          q: requiredInputString(input.query, "query"),
           restrict_sr: subreddit ? "true" : undefined,
           sort: optionalString(input.sort) ?? "relevance",
           t: optionalString(input.time) ?? "all",
@@ -51,7 +58,7 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
     );
   },
   async get_post_comments(input, context) {
-    const postId = encodeURIComponent(requireInputString(input.postId, "postId"));
+    const postId = encodeURIComponent(requiredInputString(input.postId, "postId"));
     const subreddit = optionalString(input.subreddit);
     const payload = await redditRequest(context, {
       path: subreddit ? `/r/${encodeURIComponent(subreddit)}/comments/${postId}` : `/comments/${postId}`,
@@ -71,7 +78,7 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
     };
   },
   async create_post(input, context) {
-    const kind = requireInputString(input.kind, "kind");
+    const kind = requiredInputString(input.kind, "kind");
     if (kind == "self" && input.url != null) {
       throw new ProviderRequestError(400, "url is only valid for a link post");
     }
@@ -84,8 +91,8 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
         method: "POST",
         form: {
           api_type: "json",
-          sr: requireInputString(input.subreddit, "subreddit"),
-          title: requireInputString(input.title, "title"),
+          sr: requiredInputString(input.subreddit, "subreddit"),
+          title: requiredInputString(input.title, "title"),
           kind,
           text: optionalString(input.text),
           url: optionalString(input.url),
@@ -112,7 +119,7 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
         form: {
           api_type: "json",
           thing_id: requireContentFullname(input.parentFullname, "parentFullname"),
-          text: requireInputString(input.text, "text"),
+          text: requiredInputString(input.text, "text"),
         },
       }),
       "create comment",
@@ -127,7 +134,7 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
         form: {
           api_type: "json",
           thing_id: requireContentFullname(input.fullname, "fullname"),
-          text: requireInputString(input.text, "text"),
+          text: requiredInputString(input.text, "text"),
         },
       }),
       "edit content",
@@ -147,6 +154,16 @@ export const redditActionHandlers: ProviderActionHandlers<"reddit", RedditAction
 
 export const executors: ProviderExecutors = defineOAuthProviderExecutors(service, redditActionHandlers, {
   skipDnsValidation: true,
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: redditApiBaseUrl,
+  auth: { type: "oauth_bearer" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {
@@ -265,12 +282,8 @@ function requireRedditObject(value: unknown, label: string): Record<string, unkn
   return object;
 }
 
-function requireInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function requireContentFullname(value: unknown, fieldName: string): string {
-  const fullname = requireInputString(value, fieldName);
+  const fullname = requiredInputString(value, fieldName);
   if (!fullname.startsWith("t1_") && !fullname.startsWith("t3_")) {
     throw new ProviderRequestError(400, `${fieldName} must be a Reddit post or comment fullname`);
   }

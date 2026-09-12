@@ -11,6 +11,7 @@ import type {
   ResolvedCredential,
   RuntimeLogger,
 } from "./core/types.ts";
+import type { MarketplacePricing, MarketplaceService } from "./marketplace/marketplace-service.ts";
 import type { IOAuthCredentialRefresher } from "./oauth/oauth-credential-refresh-service.ts";
 import type { IProviderLoader } from "./providers/provider-loader.ts";
 
@@ -27,20 +28,26 @@ export interface ConnectionSummary {
   id: string;
   service: string;
   connectionName: string;
-  authType: AuthType;
+  authType: AuthType | "marketplace";
   configured: boolean;
   virtual: boolean;
   default: boolean;
   profile: CredentialProfile;
+  marketplace?: { id: string; pricing: MarketplacePricing };
 }
 
-/**
- * Request body for local credential connections.
- */
+export interface ManagedConnectionSummary extends ConnectionSummary {
+  status: "active" | "reauth_required";
+  comment: string | null;
+}
+
+/** Request body for local credential connections. */
 export interface ConnectWithCredentialInput {
   connectionName?: string;
   values?: Record<string, unknown>;
   signal?: AbortSignal;
+  expectedConnection?: StoredConnection;
+  comment?: string | null;
 }
 
 export interface ConnectWithoutAuthInput {
@@ -53,6 +60,7 @@ export interface ConnectionServiceOptions {
   providerLoader: IProviderLoader;
   store: IConnectionStore;
   logger?: RuntimeLogger;
+  marketplace?: MarketplaceService;
 }
 
 export interface StoredConnection {
@@ -71,6 +79,7 @@ export interface DisconnectedConnectionSummary {
 
 export interface ExecutionConnection {
   summary?: ConnectionSummary;
+  marketplace?: boolean;
   getCredential(service: string): Promise<ResolvedCredential | undefined>;
 }
 
@@ -126,6 +135,7 @@ export class ConnectionService {
   private readonly providerLoader: IProviderLoader;
   private readonly store: IConnectionStore;
   private readonly logger?: RuntimeLogger;
+  private readonly marketplace?: MarketplaceService;
 
   constructor(input: ConnectionServiceOptions) {
     this.catalog = input.catalog;
@@ -133,6 +143,7 @@ export class ConnectionService {
     this.providerLoader = input.providerLoader;
     this.store = input.store;
     this.logger = input.logger;
+    this.marketplace = input.marketplace;
   }
 
   async listConnections(): Promise<ConnectionSummary[]> {
@@ -148,30 +159,30 @@ export class ConnectionService {
       configuredByService.set(connection.service, serviceConnections);
     }
 
-    return this.catalog.providers.flatMap((provider) => {
-      const connections = configuredByService.get(provider.service) ?? [];
-      if (connections.length > 0) {
-        return connections.map((connection) =>
-          this.createConfiguredConnectionSummary(
-            provider,
-            connection.id,
-            connection.connectionName,
-            connection.credential,
-          ),
-        );
-      }
-
-      return this.supportsAuth(provider, "no_auth")
-        ? [this.createNoAuthConnectionSummary(provider, defaultConnectionName)]
-        : [];
-    });
+    const preferences = await this.loadProviderPreferences();
+    return this.catalog.providers.flatMap((provider) =>
+      this.summarizeProviderConnections(provider, configuredByService.get(provider.service) ?? [], preferences),
+    );
   }
 
   async listConnectionsByService(service: string): Promise<ConnectionSummary[]> {
     const provider = this.getProvider(service);
     const connections = (await this.store.list()).filter((connection) => connection.service === service);
+    return this.summarizeProviderConnections(provider, connections, await this.loadProviderPreferences());
+  }
+
+  /**
+   * List one provider's connections: the stored ones, or the virtual no-auth entry when there are
+   * none, with the Marketplace entry appended after whatever already answers for the provider.
+   * Only the first entry is the default.
+   */
+  private summarizeProviderConnections(
+    provider: RuntimeProviderDefinition,
+    connections: readonly ServiceConnection[],
+    preferences: ReadonlyMap<string, boolean>,
+  ): ConnectionSummary[] {
     if (connections.length > 0) {
-      return connections.map((connection) =>
+      const stored = connections.map((connection) =>
         this.createConfiguredConnectionSummary(
           provider,
           connection.id,
@@ -179,11 +190,24 @@ export class ConnectionService {
           connection.credential,
         ),
       );
+      const marketplace = this.createMarketplaceConnectionSummary(provider, preferences);
+      return marketplace ? [...stored, marketplace] : stored;
     }
 
-    return this.supportsAuth(provider, "no_auth")
-      ? [this.createNoAuthConnectionSummary(provider, defaultConnectionName)]
-      : [];
+    const marketplace = this.createMarketplaceConnectionSummary(provider, preferences, true);
+    if (this.supportsAuth(provider, "no_auth")) {
+      const noAuth = this.createNoAuthConnectionSummary(provider, defaultConnectionName);
+      const secondaryMarketplace = this.createMarketplaceConnectionSummary(provider, preferences);
+      return secondaryMarketplace ? [noAuth, secondaryMarketplace] : [noAuth];
+    }
+    return marketplace ? [marketplace] : [];
+  }
+
+  /** Read which providers the operator enabled in the Marketplace, keyed by service id. */
+  private async loadProviderPreferences(): Promise<ReadonlyMap<string, boolean>> {
+    return new Map(
+      ((await this.marketplace?.listProviderPreferences()) ?? []).map((item) => [item.service, item.enabled]),
+    );
   }
 
   async listAuthenticatedServices(services: string[]): Promise<string[]> {
@@ -193,6 +217,10 @@ export class ConnectionService {
         .filter((connection) => connection.credential.authType !== "no_auth")
         .map((connection) => connection.service),
     );
+    const preferences = await this.loadProviderPreferences();
+    for (const service of this.marketplace?.getSnapshot()?.actionsByService.keys() ?? []) {
+      if (preferences.get(service) === true) authenticated.add(service);
+    }
     return services.filter((service) => authenticated.has(service));
   }
 
@@ -200,6 +228,8 @@ export class ConnectionService {
     const provider = this.getProvider(service);
     const name = normalizeConnectionName(connectionName);
     const stored = await this.store.get(service, name);
+    const marketplace = await this.resolveMarketplaceSummary(provider, connectionName, Boolean(stored));
+    if (marketplace) return marketplace;
     if (!stored && connectionName && !this.supportsAuth(provider, "no_auth")) {
       throw new ConnectionError("connection_not_found", `${service} connection not found: ${name}.`);
     }
@@ -215,6 +245,8 @@ export class ConnectionService {
     const provider = this.getProvider(service);
     const name = normalizeConnectionName(connectionName);
     const stored = await this.store.get(service, name);
+    const marketplace = await this.resolveMarketplaceSummary(provider, connectionName, Boolean(stored));
+    if (marketplace) return { summary: marketplace, marketplace: true, getCredential: async () => undefined };
     if (!stored && connectionName && !this.supportsAuth(provider, "no_auth")) {
       throw new ConnectionError("connection_not_found", `${service} connection not found: ${name}.`);
     }
@@ -253,9 +285,26 @@ export class ConnectionService {
     return this.supportsAuth(provider, "no_auth") ? { authType: "no_auth" } : undefined;
   }
 
+  /**
+   * Return a per-request credential scope for one connection name.
+   *
+   * The returned object resolves each service at most once and caches the
+   * promise, so a provider that asks twice - a credential-derived base URL plus
+   * an auth header, for example - costs one store read and one OAuth refresh
+   * check. Caching the promise rather than its value replays a rejection
+   * identically instead of retrying it.
+   */
   forConnection(connectionName?: string): Pick<ConnectionService, "getCredential"> {
+    const resolved = new Map<string, Promise<ResolvedCredential | undefined>>();
     return {
-      getCredential: (service: string) => this.getCredential(service, connectionName),
+      getCredential: (service: string) => {
+        let credential = resolved.get(service);
+        if (!credential) {
+          credential = this.getCredential(service, connectionName);
+          resolved.set(service, credential);
+        }
+        return credential;
+      },
     };
   }
 
@@ -294,11 +343,7 @@ export class ConnectionService {
         await this.validateApiKeyCredential(service, { apiKey, values }, input.signal),
       ),
     };
-    const connectionName = normalizeConnectionName(input.connectionName);
-    this.assertNotCancelled(input.signal);
-    const stored = await this.store.set(service, connectionName, credential);
-
-    return this.createStoredConnectionSummary(provider, stored.id, connectionName, credential);
+    return this.saveCredential(provider, credential, input);
   }
 
   async connectWithCustomCredential(service: string, input: ConnectWithCredentialInput): Promise<ConnectionSummary> {
@@ -324,11 +369,7 @@ export class ConnectionService {
         await this.validateCustomCredential(service, { values }, input.signal),
       ),
     };
-    const connectionName = normalizeConnectionName(input.connectionName);
-    this.assertNotCancelled(input.signal);
-    const stored = await this.store.set(service, connectionName, credential);
-
-    return this.createStoredConnectionSummary(provider, stored.id, connectionName, credential);
+    return this.saveCredential(provider, credential, input);
   }
 
   async setOAuthCredential(
@@ -337,27 +378,105 @@ export class ConnectionService {
     connectionNameInput?: string,
     signal?: AbortSignal,
   ): Promise<ConnectionSummary> {
+    let storedCredential: OAuthCredential;
+    try {
+      storedCredential = await this.prepareOAuthCredential(service, credential, signal);
+    } catch (error) {
+      if (!(error instanceof ConnectionError && error.code === "credential_verification_failed")) throw error;
+      // The legacy console flow keeps exchanged tokens when optional profile verification fails.
+      storedCredential = {
+        ...credential,
+        ...this.mergeCredentialRuntimeData(this.getAvailableProvider(service), "oauth2", credential, {}),
+      };
+    }
+    const connectionName = normalizeConnectionName(connectionNameInput);
+    const stored = await this.store.set(service, connectionName, storedCredential);
+    return this.createStoredConnectionSummary(
+      this.getAvailableProvider(service),
+      stored.id,
+      connectionName,
+      storedCredential,
+    );
+  }
+
+  async prepareOAuthCredential(
+    service: string,
+    credential: OAuthCredential,
+    signal?: AbortSignal,
+  ): Promise<OAuthCredential> {
     const provider = this.getAvailableProvider(service);
     if (!this.supportsAuth(provider, "oauth2")) {
       throw new ConnectionError("unsupported_auth_type", `${service} does not support oauth2.`);
     }
 
-    const connectionName = normalizeConnectionName(connectionNameInput);
-    let validation: CredentialValidationResult = {};
-    try {
-      validation = await this.validateOAuthCredential(service, credential, signal);
-    } catch (error) {
-      if (!(error instanceof ConnectionError && error.code === "credential_verification_failed")) {
-        throw error;
-      }
-    }
+    const validation = await this.validateOAuthCredential(service, credential, signal);
     this.assertNotCancelled(signal);
-    const storedCredential = {
+    return {
       ...credential,
       ...this.mergeCredentialRuntimeData(provider, "oauth2", credential, validation),
     };
-    const stored = await this.store.set(service, connectionName, storedCredential);
-    return this.createStoredConnectionSummary(provider, stored.id, connectionName, storedCredential);
+  }
+
+  async getStoredConnection(id: string): Promise<StoredConnection> {
+    const connection = (await this.store.list()).find((item) => item.id === id);
+    if (!connection) throw new ConnectionError("connection_not_found", "Connection not found.");
+    return connection;
+  }
+
+  async listManagedConnections(): Promise<ManagedConnectionSummary[]> {
+    return (await this.store.list()).map((stored) => this.createManagedConnectionSummary(stored));
+  }
+
+  async getManagedConnection(id: string): Promise<ManagedConnectionSummary> {
+    return this.createManagedConnectionSummary(await this.getStoredConnection(id));
+  }
+
+  private createManagedConnectionSummary(stored: StoredConnection): ManagedConnectionSummary {
+    const credential = stored.credential;
+    return {
+      status:
+        credential.authType === "oauth2" && !credential.refreshToken && isOAuthCredentialExpired(credential)
+          ? "reauth_required"
+          : "active",
+      ...this.createConfiguredConnectionSummary(
+        this.getProvider(stored.service),
+        stored.id,
+        stored.connectionName,
+        credential,
+      ),
+      comment:
+        credential.authType !== "no_auth" && typeof credential.metadata.connectionComment === "string"
+          ? credential.metadata.connectionComment
+          : null,
+    };
+  }
+
+  private async saveCredential(
+    provider: ProviderDefinition,
+    credential: Exclude<ResolvedCredential, { authType: "no_auth" }>,
+    input: ConnectWithCredentialInput,
+  ): Promise<ConnectionSummary> {
+    const expected = input.expectedConnection;
+    const previousComment =
+      expected?.credential.authType !== "no_auth" ? expected?.credential.metadata.connectionComment : undefined;
+    if (input.comment !== undefined || previousComment !== undefined) {
+      credential.metadata.connectionComment = input.comment === undefined ? previousComment : input.comment;
+    }
+    this.assertNotCancelled(input.signal);
+    const stored = expected
+      ? await this.replaceCredential(expected, credential)
+      : await this.store.set(provider.service, normalizeConnectionName(input.connectionName), credential);
+    return this.createStoredConnectionSummary(provider, stored.id, stored.connectionName, credential);
+  }
+
+  private async replaceCredential(
+    expected: StoredConnection,
+    credential: ResolvedCredential,
+  ): Promise<StoredConnection> {
+    if (!(await this.store.updateCredential({ ...expected, credential }))) {
+      throw new ConnectionError("connection_changed", "The connection changed during authorization.");
+    }
+    return { ...expected, credential };
   }
 
   async disconnect(
@@ -419,6 +538,44 @@ export class ConnectionService {
       virtual: true,
       default: connectionName === defaultConnectionName,
       profile: this.createNoAuthProfile(provider),
+    };
+  }
+
+  private async resolveMarketplaceSummary(
+    provider: RuntimeProviderDefinition,
+    connectionName: string | undefined,
+    hasStoredSelection: boolean,
+  ): Promise<ConnectionSummary | undefined> {
+    const marketplaceId = this.marketplace?.getSnapshot()?.definition.id;
+    if (connectionName && connectionName !== (marketplaceId ? `marketplace_${marketplaceId}` : undefined)) {
+      return undefined;
+    }
+    if (!connectionName && (hasStoredSelection || this.supportsAuth(provider, "no_auth"))) return undefined;
+    return this.createMarketplaceConnectionSummary(provider, await this.loadProviderPreferences(), !connectionName);
+  }
+
+  private createMarketplaceConnectionSummary(
+    provider: ProviderDefinition,
+    preferences: ReadonlyMap<string, boolean>,
+    isDefault = false,
+  ): ConnectionSummary | undefined {
+    const snapshot = this.marketplace?.getSnapshot();
+    if (!snapshot?.actionsByService.has(provider.service) || preferences.get(provider.service) !== true)
+      return undefined;
+    return {
+      id: `marketplace:${snapshot.definition.id}:${provider.service}`,
+      service: provider.service,
+      connectionName: `marketplace_${snapshot.definition.id}`,
+      authType: "marketplace",
+      configured: true,
+      virtual: true,
+      default: isDefault,
+      profile: {
+        accountId: `marketplace:${snapshot.definition.id}:${provider.service}`,
+        displayName: snapshot.definition.name,
+        grantedScopes: [],
+      },
+      marketplace: { id: snapshot.definition.id, pricing: snapshot.definition.pricing },
     };
   }
 

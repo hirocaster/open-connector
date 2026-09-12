@@ -13,6 +13,8 @@ import {
 import {
   defineApiKeyProviderExecutors,
   defineProviderProxy,
+  isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
 } from "../provider-runtime.ts";
@@ -399,20 +401,6 @@ function assertUpdateCheckInput(input: Record<string, unknown>): void {
   if (!mutationKeys.some((key) => input[key] !== undefined)) {
     throw new ProviderRequestError(400, "At least one update field must be provided.");
   }
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return (
-    !!error &&
-    typeof error === "object" &&
-    "name" in error &&
-    (String((error as { name?: unknown }).name) === "AbortError" ||
-      String((error as { name?: unknown }).name) === "TimeoutError")
-  );
 }
 
 export const proxy: ProviderProxyExecutor = defineProviderProxy({

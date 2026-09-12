@@ -8,43 +8,10 @@ import { compactObject } from "../../core/cast.ts";
 import { withMcpClient } from "../mcp-client.ts";
 import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
-interface OAuthClientConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
-}
-
-interface TokenSet {
-  accessToken: string;
-  refreshToken: string;
-  tokenType: string;
-  expiresAt: string;
-  providerScopes: string[];
-}
-
-class HubspotRequestError extends ProviderRequestError {
-  readonly code: string;
-
-  constructor(code: string, message: string, status = 500, details?: unknown) {
-    super(status, message, details);
-    this.code = code;
-  }
-}
-
 type HubspotMcpToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
 export const hubspotMcpEndpoint = "https://mcp.hubspot.com/";
-export const hubspotMcpAuthorizeUrl = "https://mcp.hubspot.com/oauth/authorize/user";
-const hubspotMcpTokenUrl = "https://mcp.hubspot.com/oauth/v3/token";
 const hubspotMcpRequestTimeoutMs = 30_000;
-
-interface HubspotTokenPayload {
-  accessToken: string;
-  refreshToken?: string;
-  tokenType: string;
-  expiresIn: number;
-  providerScopes: string[];
-}
 
 interface HubspotActionContext {
   accessToken: string;
@@ -103,61 +70,6 @@ const directMcpToolNames = new Set([
   "submit_feedback",
 ]);
 
-export async function exchangeHubspotCode(
-  input: {
-    code: string;
-    clientConfig: OAuthClientConfig;
-    codeVerifier: string;
-  },
-  fetcher: typeof fetch,
-): Promise<TokenSet> {
-  const response = await fetcher(hubspotMcpTokenUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: input.clientConfig.clientId,
-      client_secret: input.clientConfig.clientSecret,
-      code: input.code,
-      code_verifier: input.codeVerifier,
-      grant_type: "authorization_code",
-      redirect_uri: input.clientConfig.redirectUri,
-    }),
-  });
-
-  return normalizeHubspotTokenResponse(response);
-}
-
-export async function refreshHubspotAccessToken(
-  input: {
-    refreshToken: string;
-    clientConfig: OAuthClientConfig;
-    previousProviderScopes?: string[];
-  },
-  fetcher: typeof fetch,
-): Promise<TokenSet> {
-  const response = await fetcher(hubspotMcpTokenUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      client_id: input.clientConfig.clientId,
-      client_secret: input.clientConfig.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: input.refreshToken,
-    }),
-  });
-
-  const tokenSet = await normalizeHubspotTokenResponse(response);
-  return {
-    ...tokenSet,
-    refreshToken: tokenSet.refreshToken || input.refreshToken,
-    providerScopes: tokenSet.providerScopes.length > 0 ? tokenSet.providerScopes : (input.previousProviderScopes ?? []),
-  };
-}
-
 export async function fetchHubspotCurrentAccount(
   accessToken: string,
   fetcher: typeof fetch,
@@ -203,7 +115,7 @@ export async function executeHubspotAction(input: ExecuteHubspotActionInput, fet
 
   const spec = actionSpecs.get(input.actionName);
   if (!spec) {
-    throw new HubspotRequestError("invalid_input", `unknown hubspot action: ${input.actionName}`, 400);
+    throw new ProviderRequestError(400, `unknown hubspot action: ${input.actionName}`, undefined, "invalid_input");
   }
 
   if (spec.operation === "search") {
@@ -219,7 +131,7 @@ export async function executeHubspotAction(input: ExecuteHubspotActionInput, fet
     return updateHubspotRecord(spec.objectType, input.input, context);
   }
 
-  throw new HubspotRequestError("invalid_input", `unknown hubspot action: ${input.actionName}`, 400);
+  throw new ProviderRequestError(400, `unknown hubspot action: ${input.actionName}`, undefined, "invalid_input");
 }
 
 async function callDirectHubspotMcpTool(
@@ -493,8 +405,8 @@ async function callHubspotMcpTool(input: HubspotMcpToolCallInput) {
     });
     return unwrapHubspotMcpOutput(output);
   } catch (error) {
-    if (error instanceof HubspotRequestError && error.status === 401) {
-      throw new HubspotRequestError("credential_expired", error.message, 409);
+    if (error instanceof ProviderRequestError && error.status === 401) {
+      throw new ProviderRequestError(401, error.message);
     }
     throw error;
   }
@@ -539,7 +451,7 @@ function mapHubspotMcpError(service: string, error: unknown): ProviderRequestErr
     return error;
   }
   if (error instanceof UnauthorizedError) {
-    return new HubspotRequestError("credential_expired", `${service} MCP token is invalid or expired`, 401, error);
+    return new ProviderRequestError(401, `${service} MCP token is invalid or expired`, error);
   }
   if (error instanceof SdkHttpError) {
     const status = error.status;
@@ -575,84 +487,6 @@ function unwrapHubspotMcpOutput(output: unknown) {
   } catch {
     return output;
   }
-}
-
-async function normalizeHubspotTokenResponse(response: Response): Promise<TokenSet> {
-  const payload = parseHubspotTokenPayload(await readHubspotJson(response), response.status);
-
-  return {
-    accessToken: payload.accessToken,
-    refreshToken: payload.refreshToken ?? "",
-    tokenType: payload.tokenType,
-    expiresAt: new Date(Date.now() + payload.expiresIn * 1000).toISOString(),
-    providerScopes: payload.providerScopes,
-  };
-}
-
-async function readHubspotJson(response: Response): Promise<unknown> {
-  let payload: unknown = null;
-  try {
-    payload = await response.json();
-  } catch {
-    payload = null;
-  }
-
-  if (!response.ok) {
-    throw toHubspotError(response.status, payload);
-  }
-
-  return payload;
-}
-
-function parseHubspotTokenPayload(payload: unknown, status: number): HubspotTokenPayload {
-  const body = asObject(payload);
-  if (!body) {
-    throw new HubspotRequestError("provider_error", `malformed hubspot token response (${status})`);
-  }
-
-  const accessToken = asString(body.access_token);
-  if (!accessToken) {
-    throw new HubspotRequestError("provider_error", "malformed hubspot token response: access_token");
-  }
-
-  const tokenType = asString(body.token_type);
-  if (!tokenType) {
-    throw new HubspotRequestError("provider_error", "malformed hubspot token response: token_type");
-  }
-
-  const expiresIn = asPositiveFiniteNumber(body.expires_in);
-  if (expiresIn == null) {
-    throw new HubspotRequestError("provider_error", "malformed hubspot token response: expires_in");
-  }
-
-  return {
-    accessToken,
-    refreshToken: asString(body.refresh_token) ?? undefined,
-    tokenType,
-    expiresIn,
-    providerScopes: parseHubspotProviderScopes(body),
-  };
-}
-
-function parseHubspotProviderScopes(body: Record<string, unknown>) {
-  const scope = body.scope;
-  if (typeof scope === "string") {
-    return scope
-      .split(" ")
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .sort();
-  }
-
-  const scopes = body.scopes;
-  if (Array.isArray(scopes)) {
-    return scopes
-      .map((item) => asString(item))
-      .filter((item): item is string => Boolean(item))
-      .sort();
-  }
-
-  return [];
 }
 
 function normalizeSearchOutput(output: unknown) {
@@ -758,46 +592,6 @@ function readArrayProperty(body: Record<string, unknown> | undefined, keys: stri
   return [];
 }
 
-function toHubspotError(status: number, payload: unknown) {
-  const message = extractHubspotErrorMessage(payload) ?? `hubspot request failed with status ${status}`;
-
-  if (status === 401) {
-    return new HubspotRequestError("credential_expired", message, 409);
-  }
-  if (status === 400 || status === 404) {
-    return new HubspotRequestError("invalid_input", message, status);
-  }
-  if (status === 429) {
-    return new HubspotRequestError("rate_limited", message, 429);
-  }
-
-  return new HubspotRequestError("provider_error", message, status || 500);
-}
-
-function extractHubspotErrorMessage(payload: unknown): string | null {
-  const body = asObject(payload);
-  if (!body) {
-    return null;
-  }
-
-  const errorDescription = asString(body.error_description);
-  if (errorDescription) {
-    return errorDescription;
-  }
-
-  const message = asString(body.message);
-  if (message) {
-    return message;
-  }
-
-  const error = asString(body.error);
-  if (error) {
-    return error;
-  }
-
-  return null;
-}
-
 function asObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -818,13 +612,6 @@ function asString(value: unknown): string | undefined {
   return undefined;
 }
 
-function asPositiveFiniteNumber(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    return null;
-  }
-  return value;
-}
-
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -838,7 +625,7 @@ function asStringArray(value: unknown): string[] | undefined {
 function requireNonEmptyString(value: unknown, field: string): string {
   const stringValue = asString(value);
   if (!stringValue) {
-    throw new HubspotRequestError("invalid_input", `${field} is required`, 400);
+    throw new ProviderRequestError(400, `${field} is required`, undefined, "invalid_input");
   }
 
   return stringValue;

@@ -15,13 +15,13 @@ import { encodePathSegment } from "../../core/request.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
 export const wrikeApiBaseUrl = "https://www.wrike.com/api/v4";
-
-const wrikeDefaultRequestTimeoutMs = 30_000;
 
 type WrikeRequestPhase = "validate" | "execute";
 type WrikeActionHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
@@ -146,7 +146,7 @@ async function executeGetFolders(input: Record<string, unknown>, context: ApiKey
 }
 
 async function executeCreateFolder(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
-  const folderId = requiredString(input.folderId, "folderId", invalidInputError);
+  const folderId = requiredString(input.folderId, "folderId", providerInputError);
   const payload = await wrikeRequest({
     ...requestContext(context),
     method: "POST",
@@ -196,7 +196,7 @@ async function executeGetTasks(input: Record<string, unknown>, context: ApiKeyPr
 }
 
 async function executeCreateTask(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
-  const folderId = requiredString(input.folderId, "folderId", invalidInputError);
+  const folderId = requiredString(input.folderId, "folderId", providerInputError);
   const payload = await wrikeRequest({
     ...requestContext(context),
     method: "POST",
@@ -225,7 +225,7 @@ async function wrikeRequest(input: WrikeRequestOptions): Promise<Record<string, 
     appendQueryParam(url, key, value);
   }
 
-  const timeout = createProviderTimeout(input.signal, wrikeDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   let response: Response;
   try {
     response = await input.fetcher(url, {
@@ -381,7 +381,7 @@ function requireStringArray(value: unknown, fieldName: string): string[] {
     throw new ProviderRequestError(400, `${fieldName} must be a non-empty array`);
   }
 
-  return value.map((item, index) => requiredString(item, `${fieldName}[${index}]`, invalidInputError));
+  return value.map((item, index) => requiredString(item, `${fieldName}[${index}]`, providerInputError));
 }
 
 function readResponseObject(value: unknown): Record<string, unknown> {
@@ -444,12 +444,4 @@ function mapWrikeError(status: number, payload: unknown, phase: WrikeRequestPhas
   }
 
   return new ProviderRequestError(status >= 500 ? 502 : status, description, payload);
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

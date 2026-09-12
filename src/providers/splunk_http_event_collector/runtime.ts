@@ -1,19 +1,10 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-runtime.ts";
 import type { SplunkHttpEventCollectorActionName } from "./actions.ts";
 
+import { createHash, randomUUID } from "node:crypto";
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
-
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
-}
-
-import { createHash, randomUUID } from "node:crypto";
 
 export interface SplunkHttpEventCollectorCredentialCheck {
   providerAccountId?: string;
@@ -32,7 +23,7 @@ interface SplunkHecExpectedResponse {
   readonly code: number;
 }
 
-interface SplunkHecActionInput extends ApiKeyProviderActionInput {
+interface SplunkHecActionInput extends ApiKeyActionRequest {
   readonly actionName: SplunkHttpEventCollectorActionName;
   readonly input: Record<string, unknown>;
 }
@@ -288,7 +279,7 @@ function mapSplunkHecError(status: number, code: number | undefined, message: st
     return new ProviderRequestError(400, message);
   }
   if (phase === "execute" && (status === 401 || status === 403 || code === 4 || code === 21 || code === 22)) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
   if (status === 400 || status === 404) {
     return new ProviderRequestError(400, message);

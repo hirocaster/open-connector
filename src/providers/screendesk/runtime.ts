@@ -1,13 +1,13 @@
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 export const screendeskApiBaseUrl = "https://app.screendesk.io/api/v2";
-const requestTimeoutMs = 30_000;
 
 export interface ScreendeskContext {
   apiKey: string;
@@ -90,7 +90,7 @@ export async function validateScreendeskCredential(context: ScreendeskContext): 
 }
 
 async function requestScreendesk(input: ScreendeskRequestInput): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const relativePath = input.path.startsWith("/") ? input.path.slice(1) : input.path;
     const url = new URL(relativePath, `${screendeskApiBaseUrl}/`);
@@ -147,8 +147,4 @@ function readScreendeskErrorMessage(payload: unknown): string | undefined {
   if (!record) return undefined;
   if (typeof record.error === "string") return record.error;
   return optionalString(optionalRecord(record.error)?.message) ?? optionalString(record.message);
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

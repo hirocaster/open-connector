@@ -2,15 +2,14 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
+import { compactObject, optionalBoolean, optionalString, positiveInteger, requiredRecord } from "../../core/cast.ts";
 import {
-  compactObject,
-  optionalBoolean,
-  optionalString,
-  positiveInteger,
-  requiredRecord,
-  requiredString,
-} from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+  providerInputError,
+  providerResponseError,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 const codacyApiBaseUrl = "https://app.codacy.com";
 const codacyApiPathPrefix = "/api/v3";
@@ -56,8 +55,8 @@ export const codacyActionHandlers: ProviderActionHandlers<"codacy", CodacyAction
     const payload = await requestCodacyJson<{ data?: unknown; pagination?: unknown }>({
       context,
       path: `/analysis/organizations/${encodeURIComponent(
-        requireInputString(input.provider, "provider"),
-      )}/${encodeURIComponent(requireInputString(input.remoteOrganizationName, "remoteOrganizationName"))}/repositories`,
+        requiredInputString(input.provider, "provider"),
+      )}/${encodeURIComponent(requiredInputString(input.remoteOrganizationName, "remoteOrganizationName"))}/repositories`,
       query: compactObject({
         ...readPaginationQuery(input),
         search: optionalString(input.search),
@@ -77,9 +76,9 @@ export const codacyActionHandlers: ProviderActionHandlers<"codacy", CodacyAction
     const payload = await requestCodacyJson<{ data?: unknown }>({
       context,
       path: `/analysis/organizations/${encodeURIComponent(
-        requireInputString(input.provider, "provider"),
-      )}/${encodeURIComponent(requireInputString(input.remoteOrganizationName, "remoteOrganizationName"))}/repositories/${encodeURIComponent(
-        requireInputString(input.repositoryName, "repositoryName"),
+        requiredInputString(input.provider, "provider"),
+      )}/${encodeURIComponent(requiredInputString(input.remoteOrganizationName, "remoteOrganizationName"))}/repositories/${encodeURIComponent(
+        requiredInputString(input.repositoryName, "repositoryName"),
       )}`,
       query: compactObject({
         branch: optionalString(input.branch),
@@ -122,7 +121,7 @@ export const codacyActionHandlers: ProviderActionHandlers<"codacy", CodacyAction
   async list_tool_patterns(input, context) {
     const payload = await requestCodacyJson<{ data?: unknown; pagination?: unknown }>({
       context,
-      path: `/tools/${encodeURIComponent(requireInputString(input.toolUuid, "toolUuid"))}/patterns`,
+      path: `/tools/${encodeURIComponent(requiredInputString(input.toolUuid, "toolUuid"))}/patterns`,
       query: compactObject({
         ...readPaginationQuery(input),
         enabled: optionalBoolean(input.enabled),
@@ -140,8 +139,8 @@ export const codacyActionHandlers: ProviderActionHandlers<"codacy", CodacyAction
   async get_tool_pattern(input, context) {
     const payload = await requestCodacyJson<{ data?: unknown }>({
       context,
-      path: `/tools/${encodeURIComponent(requireInputString(input.toolUuid, "toolUuid"))}/patterns/${encodeURIComponent(
-        requireInputString(input.patternId, "patternId"),
+      path: `/tools/${encodeURIComponent(requiredInputString(input.toolUuid, "toolUuid"))}/patterns/${encodeURIComponent(
+        requiredInputString(input.patternId, "patternId"),
       )}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
@@ -310,15 +309,11 @@ function readResponseArray(value: unknown, fieldName: string): Array<Record<stri
   return value.map((item) => requiredRecord(item, fieldName, providerResponseError));
 }
 
-function requireInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, invalidInputError);
-}
-
 function readOptionalPositiveInteger(value: unknown, fieldName: string): number | undefined {
   if (value == null || value === "") {
     return undefined;
   }
-  return positiveInteger(value, fieldName, invalidInputError);
+  return positiveInteger(value, fieldName, providerInputError);
 }
 
 function readOptionalNumberAsString(value: unknown): string | undefined {
@@ -332,12 +327,4 @@ function pickFirstNonEmptyString(...values: Array<string | undefined>): string |
     }
   }
   return undefined;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

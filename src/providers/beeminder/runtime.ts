@@ -2,7 +2,7 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
 
-import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
+import { booleanString, compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
 import {
   createProviderTimeout,
@@ -12,7 +12,6 @@ import {
 } from "../provider-runtime.ts";
 
 export const beeminderApiBaseUrl = "https://www.beeminder.com/api/v1";
-const beeminderDefaultRequestTimeoutMs = 30_000;
 
 type BeeminderPhase = "validate" | "execute";
 type BeeminderContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -24,9 +23,9 @@ export const beeminderActionHandlers: ProviderActionHandlers<"beeminder", Beemin
       method: "GET",
       path: `/users/${encodePathSegment(optionalString(input.username) ?? "me")}.json`,
       query: compactObject({
-        associations: readOptionalBooleanString(input.associations),
+        associations: booleanString(input.associations),
         diff_since: readOptionalIntegerString(input.diff_since),
-        skinny: readOptionalBooleanString(input.skinny),
+        skinny: booleanString(input.skinny),
         datapoints_count: readOptionalIntegerString(input.datapoints_count),
       }),
       context,
@@ -64,7 +63,7 @@ export const beeminderActionHandlers: ProviderActionHandlers<"beeminder", Beemin
       method: "GET",
       path: `/users/${encodePathSegment(readRequiredString(input.username, "username"))}/goals/${encodePathSegment(readRequiredString(input.goal_slug, "goal_slug"))}.json`,
       query: compactObject({
-        datapoints: readOptionalBooleanString(input.datapoints),
+        datapoints: booleanString(input.datapoints),
       }),
       context,
       phase: "execute",
@@ -187,7 +186,7 @@ async function requestBeeminderJson(input: {
   context: BeeminderContext;
   phase: BeeminderPhase;
 }): Promise<unknown> {
-  const timeout = createProviderTimeout(input.context.signal, beeminderDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   const body = input.form ? buildBeeminderForm(input.context.apiKey, input.form) : undefined;
 
   try {
@@ -430,10 +429,6 @@ function readOptionalIntegerString(value: unknown): string | undefined {
     return undefined;
   }
   return String(value);
-}
-
-function readOptionalBooleanString(value: unknown): string | undefined {
-  return typeof value === "boolean" ? String(value) : undefined;
 }
 
 function readNullableInteger(value: unknown): number | null {

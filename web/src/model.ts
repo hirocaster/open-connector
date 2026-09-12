@@ -11,10 +11,21 @@ export type AuthDefinition =
   | {
       type: "oauth2";
       scopes: string[];
+      authorizationOptions?: OAuthAuthorizationOption[];
       tokenEndpointAuthMethod?: "client_secret_basic" | "client_secret_post" | "none";
       clientConfigFields?: CredentialField[];
       clientSetup?: OAuthClientSetup;
     };
+
+export interface OAuthAuthorizationOption {
+  id: string;
+  label: string;
+  description: string;
+  required: boolean;
+  defaultSelected: boolean;
+  risk: "standard" | "sensitive" | "destructive";
+  requires?: string[];
+}
 
 export type ProviderScenario =
   | "ai"
@@ -98,6 +109,24 @@ export interface ConnectionRecord {
   default?: boolean;
   profile?: Record<string, unknown> | null;
   metadata: Record<string, unknown>;
+}
+
+export interface MarketplaceState {
+  configured: boolean;
+  enabled: boolean;
+  discoveryUrl: string;
+  status: "disabled" | "available" | "unavailable" | "auth_error";
+  marketplace?: { version: 1; id: string; name: string; pricing: "free" | "metered" };
+  compatibleActionCount: number;
+  compatibleProviderCount: number;
+  error?: string;
+}
+
+export interface ProviderPreference {
+  service: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface OAuthConfig {
@@ -205,6 +234,8 @@ export interface AppData {
   runtimePolicy?: RuntimePolicyState;
   runs: RunLog[];
   runsNextCursor?: string;
+  marketplace?: MarketplaceState;
+  providerPreferences?: ProviderPreference[];
 }
 
 export interface OverviewSummary {
@@ -223,6 +254,7 @@ export interface ProviderConnectionStatus {
   oauthClientRequired: boolean;
   connections: ConnectionRecord[];
   connection?: ConnectionRecord;
+  marketplaceConnection?: ConnectionRecord;
 }
 
 const firstProviderService = "fusion-api";
@@ -258,10 +290,7 @@ const recommendedProviderServices = [
   "stripe",
   "googleanalytics",
   "googlesearchconsole",
-  "facebookleadads",
-  "metaads",
   "linkedin",
-  "salesforce",
   "pipedrive",
   "zendesk",
   "intercom",
@@ -292,6 +321,7 @@ export const emptyData: AppData = {
     runtime: emptyPolicyRules(),
   },
   runs: [],
+  providerPreferences: [],
 };
 
 function emptyPolicyRules(): PolicyRules {
@@ -325,6 +355,7 @@ export function resolveProviderConnectionStatus(
   const noSetupRequired = isNoAuthOnlyProvider(provider);
   const serviceConnections = noSetupRequired ? [] : usableConnectionsForService(connections, provider.service);
   const connection = pickUsableCredentialConnection(serviceConnections);
+  const marketplaceConnection = serviceConnections.find((item) => item.authType === "marketplace");
   return {
     noSetupRequired,
     connected: connection != null,
@@ -332,6 +363,7 @@ export function resolveProviderConnectionStatus(
       connection == null && providerRequiresOAuth(provider) && !oauthClientConfigured(provider.service, oauthConfigs),
     connections: serviceConnections,
     connection,
+    marketplaceConnection,
   };
 }
 
@@ -353,7 +385,7 @@ function isUsableCredentialConnection(connection: ConnectionRecord | undefined):
   return (
     connection != null &&
     connection.authType !== "no_auth" &&
-    connection.virtual !== true &&
+    (connection.virtual !== true || connection.authType === "marketplace") &&
     connection.configured !== false
   );
 }
@@ -449,13 +481,6 @@ function compactProviderService(service: string): string {
     .replace(/\s+/g, "");
 }
 
-export function firstProviderByConnectionStatus(
-  providers: ProviderDefinition[],
-  connections: ConnectionRecord[],
-): ProviderDefinition | undefined {
-  return sortProviders(providers, new Map(connections.map((connection) => [connection.service, connection])))[0];
-}
-
 export function filterActions(actions: ActionDefinition[], query: string, service: string | null): ActionDefinition[] {
   const normalized = query.trim().toLowerCase();
   return actions.filter((action) => {
@@ -490,17 +515,21 @@ export function parameterSummaries(
   }));
 }
 
-export function buildActionExamples(action: FullActionDefinition): { curl: string; typescript: string } {
+export function buildActionExamples(
+  action: FullActionDefinition,
+  origin: string,
+): { curl: string; typescript: string } {
+  const endpoint = `${origin}/v1/actions/${action.id}`;
   const body = { input: JSON.parse(exampleInput(action.inputSchema)) as unknown };
   const bodyText = JSON.stringify(body, null, 2);
   return {
     curl: [
-      `curl -s http://localhost:3000/v1/actions/${action.id} \\`,
+      `curl -s ${endpoint} \\`,
       "  -H 'content-type: application/json' \\",
-      `  -d '${JSON.stringify(body)}'`,
+      `  -d ${shellSingleQuote(JSON.stringify(body))}`,
     ].join("\n"),
     typescript: [
-      `const response = await fetch("http://localhost:3000/v1/actions/${action.id}", {`,
+      `const response = await fetch(${JSON.stringify(endpoint)}, {`,
       `  method: "POST",`,
       `  headers: { "content-type": "application/json" },`,
       `  body: JSON.stringify(${bodyText}),`,
@@ -508,6 +537,11 @@ export function buildActionExamples(action: FullActionDefinition): { curl: strin
       `const result = await response.json();`,
     ].join("\n"),
   };
+}
+
+/** Quote a value for a POSIX shell so an apostrophe inside an example does not end the argument. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 export function formatDate(value: string): string {
@@ -535,8 +569,10 @@ export function compactJson(value: unknown): string {
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
+// These mirror src/core/json-schema.ts (readSchemaProperties/readSchemaRequired/describeSchemaType) and must be
+// kept in sync by hand because the web build cannot import src/.
 function readProperties(schema: JsonSchema): Record<string, JsonSchema> {
-  return schema.properties && typeof schema.properties === "object"
+  return schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
     ? (schema.properties as Record<string, JsonSchema>)
     : {};
 }

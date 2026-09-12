@@ -2,19 +2,16 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
 
+import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
-  compactObject,
-  optionalBoolean,
-  optionalInteger,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 export const brightDataApiBaseUrl = "https://api.brightdata.com";
 const brightDataStatusPath = "/status";
-const brightDataRequestTimeoutMs = 30_000;
 
 type BrightDataRequestPhase = "validate" | "execute";
 type BrightDataQueryValue = string | number | boolean | undefined;
@@ -128,7 +125,7 @@ async function listDatasets(context: BrightDataActionContext): Promise<unknown> 
 }
 
 async function getDatasetMetadata(input: Record<string, unknown>, context: BrightDataActionContext): Promise<unknown> {
-  const datasetId = readRequiredString(input.datasetId, "datasetId");
+  const datasetId = requiredInputString(input.datasetId, "datasetId");
   const payload = await requestBrightDataJson({
     apiKey: context.apiKey,
     path: `/datasets/${encodeURIComponent(datasetId)}/metadata`,
@@ -163,7 +160,7 @@ async function listDatasetViews(context: BrightDataActionContext): Promise<unkno
 }
 
 async function getSnapshotMetadata(input: Record<string, unknown>, context: BrightDataActionContext): Promise<unknown> {
-  const snapshotId = readRequiredString(input.snapshotId, "snapshotId");
+  const snapshotId = requiredInputString(input.snapshotId, "snapshotId");
   const payload = await requestBrightDataJson({
     apiKey: context.apiKey,
     path: `/datasets/snapshots/${encodeURIComponent(snapshotId)}`,
@@ -181,7 +178,7 @@ async function getSnapshotMetadata(input: Record<string, unknown>, context: Brig
 }
 
 async function getSnapshotParts(input: Record<string, unknown>, context: BrightDataActionContext): Promise<unknown> {
-  const snapshotId = readRequiredString(input.snapshotId, "snapshotId");
+  const snapshotId = requiredInputString(input.snapshotId, "snapshotId");
   const payload = await requestBrightDataJson({
     apiKey: context.apiKey,
     path: `/datasets/snapshots/${encodeURIComponent(snapshotId)}/parts`,
@@ -204,7 +201,7 @@ async function getSnapshotParts(input: Record<string, unknown>, context: BrightD
 }
 
 async function requestBrightDataJson(input: BrightDataRequestOptions): Promise<unknown> {
-  const timeout = createProviderTimeout(input.signal, brightDataRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   const url = new URL(input.path, brightDataApiBaseUrl);
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) {
@@ -339,10 +336,6 @@ function readRecordField(value: unknown, fieldName: string): Record<string, unkn
     throw new ProviderRequestError(502, `${fieldName} is required in Bright Data response`);
   }
   return record;
-}
-
-function readRequiredString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readRequiredNumber(value: unknown, fieldName: string): number {

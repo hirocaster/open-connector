@@ -1,7 +1,12 @@
 import type { CredentialValidationResult } from "../../core/types.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  createProviderTimeout,
+  isAbortLikeError,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const getresponseRetailApiBaseUrl = "https://api.getresponse.com/v3";
 export const getresponseMaxApiBaseUrls = [
@@ -9,16 +14,7 @@ export const getresponseMaxApiBaseUrls = [
   "https://api3.getresponse360.pl/v3",
 ] as const;
 
-const getresponseRequestTimeoutMs = 30_000;
 const getresponseCredentialHelpUrl = "https://app.getresponse.com/api";
-
-class GetresponseError extends ProviderRequestError {
-  readonly errorCode: string;
-  constructor(code: string, message: string, status: number, _cause?: unknown, details?: unknown) {
-    super(status, message, details);
-    this.errorCode = code;
-  }
-}
 
 type GetresponseRequestPhase = "validate" | "execute";
 type GetresponseQueryValue = string | number | boolean | undefined;
@@ -86,7 +82,7 @@ export async function validateGetresponseCredential(
   fetcher: typeof fetch,
 ): Promise<CredentialValidationResult> {
   const apiKey = input.apiKey?.trim();
-  if (!apiKey) throw new GetresponseError("invalid_input", "apiKey is required", 400);
+  if (!apiKey) throw new ProviderRequestError(400, "apiKey is required", undefined, "invalid_input");
   const connection = normalizeGetresponseConnection(input);
   const { payload } = await requestGetresponseJson({
     apiKey,
@@ -113,12 +109,16 @@ export async function validateGetresponseCredential(
   };
 }
 
+export function resolveStoredGetresponseApiBaseUrl(providerMetadata: Record<string, unknown>): string {
+  return readStoredConnection(providerMetadata).apiBaseUrl;
+}
+
 function listCampaigns(input: GetresponseInput, fetcher: typeof fetch) {
   return requestList(input, fetcher, {
     path: "/campaigns",
     query: compactObject({
       "query[name]": optionalInputString(input.input.name),
-      "query[isDefault]": optionalInputBoolean(input.input.isDefault),
+      "query[isDefault]": optionalBoolean(input.input.isDefault),
       ...buildSortQuery(input.input),
       ...buildPageQuery(input.input),
     }),
@@ -333,7 +333,7 @@ async function requestGetresponseJson(input: {
   query?: Record<string, GetresponseQueryValue>;
   body?: Record<string, unknown>;
 }): Promise<GetresponseRequestResult> {
-  const timeout = createProviderTimeout(undefined, getresponseRequestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   const url = buildGetresponseUrl(input.connection.apiBaseUrl, input.path, input.query);
   const method = input.method ?? "GET";
   const headers = new Headers({
@@ -360,11 +360,11 @@ async function requestGetresponseJson(input: {
     }
     return { payload, headers: response.headers, status: response.status };
   } catch (error) {
-    if (error instanceof GetresponseError) throw error;
+    if (error instanceof ProviderRequestError && error.code !== undefined) throw error;
     if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new GetresponseError("provider_error", "GetResponse request timed out", 504);
+      throw new ProviderRequestError(504, "GetResponse request timed out", undefined, "provider_error");
     }
-    throw new GetresponseError("provider_error", "GetResponse request failed", 502);
+    throw new ProviderRequestError(502, "GetResponse request failed", undefined, "provider_error");
   } finally {
     timeout.cleanup();
   }
@@ -382,10 +382,11 @@ function normalizeGetresponseConnection(input: Record<string, string>): Getrespo
   const parentLogin = optionalTrimmed(input.parentLogin);
 
   if (Boolean(maxApiBaseUrl) !== Boolean(domain)) {
-    throw new GetresponseError(
-      "invalid_input",
-      "maxApiBaseUrl and domain must be provided together for GetResponse MAX",
+    throw new ProviderRequestError(
       400,
+      "maxApiBaseUrl and domain must be provided together for GetResponse MAX",
+      undefined,
+      "invalid_input",
     );
   }
 
@@ -399,14 +400,24 @@ function normalizeGetresponseConnection(input: Record<string, string>): Getrespo
 function readStoredConnection(providerMetadata: Record<string, unknown> | undefined): GetresponseConnection {
   const apiBaseUrl = optionalString(providerMetadata?.apiBaseUrl);
   if (!apiBaseUrl) {
-    throw new GetresponseError("provider_error", "getresponse connection is missing apiBaseUrl metadata", 500);
+    throw new ProviderRequestError(
+      500,
+      "getresponse connection is missing apiBaseUrl metadata",
+      undefined,
+      "provider_error",
+    );
   }
   try {
     const normalizedApiBaseUrl =
       apiBaseUrl === getresponseRetailApiBaseUrl ? apiBaseUrl : normalizeMaxApiBaseUrl(apiBaseUrl);
     const domain = optionalString(providerMetadata?.domain);
     if (normalizedApiBaseUrl !== getresponseRetailApiBaseUrl && !domain) {
-      throw new GetresponseError("provider_error", "getresponse MAX connection is missing domain metadata", 500);
+      throw new ProviderRequestError(
+        500,
+        "getresponse MAX connection is missing domain metadata",
+        undefined,
+        "provider_error",
+      );
     }
     return {
       apiBaseUrl: normalizedApiBaseUrl,
@@ -414,8 +425,8 @@ function readStoredConnection(providerMetadata: Record<string, unknown> | undefi
       parentLogin: optionalString(providerMetadata?.parentLogin),
     };
   } catch (error) {
-    if (error instanceof GetresponseError && error.errorCode === "invalid_input") {
-      throw new GetresponseError("provider_error", "getresponse connection metadata is invalid", 500);
+    if (error instanceof ProviderRequestError && error.code === "invalid_input") {
+      throw new ProviderRequestError(500, "getresponse connection metadata is invalid", undefined, "provider_error");
     }
     throw error;
   }
@@ -427,7 +438,12 @@ function normalizeMaxApiBaseUrl(value: string) {
     normalized = normalized.slice(0, -1);
   }
   if (!getresponseMaxApiBaseUrls.includes(normalized as (typeof getresponseMaxApiBaseUrls)[number])) {
-    throw new GetresponseError("invalid_input", `maxApiBaseUrl must be ${getresponseMaxApiBaseUrls.join(" or ")}`, 400);
+    throw new ProviderRequestError(
+      400,
+      `maxApiBaseUrl must be ${getresponseMaxApiBaseUrls.join(" or ")}`,
+      undefined,
+      "invalid_input",
+    );
   }
   return normalized;
 }
@@ -442,7 +458,12 @@ function normalizeGetresponseDomain(value: string) {
     normalized.includes("#") ||
     !normalized.includes(".")
   ) {
-    throw new GetresponseError("invalid_input", "domain must contain only the GetResponse MAX account domain", 400);
+    throw new ProviderRequestError(
+      400,
+      "domain must contain only the GetResponse MAX account domain",
+      undefined,
+      "invalid_input",
+    );
   }
   return normalized;
 }
@@ -459,7 +480,7 @@ function buildContactBody(input: Record<string, unknown>, requireIdentity: boole
   const email = optionalInputString(input.email);
   const campaignId = optionalInputString(input.campaignId);
   if (requireIdentity && (!email || !campaignId)) {
-    throw new GetresponseError("invalid_input", "email and campaignId are required", 400);
+    throw new ProviderRequestError(400, "email and campaignId are required", undefined, "invalid_input");
   }
   return compactObject({
     email,
@@ -477,7 +498,7 @@ function buildContactBody(input: Record<string, unknown>, requireIdentity: boole
 function mapContactTags(value: unknown) {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
-    throw new GetresponseError("invalid_input", "tags must be an array", 400);
+    throw new ProviderRequestError(400, "tags must be an array", undefined, "invalid_input");
   }
   return value.map((item) => {
     const record = requireInputRecord(item, "contact tag");
@@ -488,7 +509,7 @@ function mapContactTags(value: unknown) {
 function mapContactCustomFields(value: unknown) {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
-    throw new GetresponseError("invalid_input", "customFields must be an array", 400);
+    throw new ProviderRequestError(400, "customFields must be an array", undefined, "invalid_input");
   }
   return value.map((item) => {
     const record = requireInputRecord(item, "contact custom field");
@@ -656,7 +677,7 @@ async function readGetresponsePayload(response: Response) {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new GetresponseError("provider_error", "GetResponse returned invalid JSON", 502);
+    throw new ProviderRequestError(502, "GetResponse returned invalid JSON", undefined, "provider_error");
   }
 }
 
@@ -664,24 +685,28 @@ function createGetresponseError(status: number, payload: unknown, phase: Getresp
   const message = readGetresponseErrorMessage(payload) ?? `GetResponse request failed (${status})`;
   const providerCode = readGetresponseErrorCode(payload);
   if (status === 401 || (status === 403 && providerCode === 1014)) {
-    return new GetresponseError(
-      phase === "validate" ? "invalid_input" : "credential_expired",
-      phase === "validate" ? `GetResponse credential validation failed: ${message}` : message,
+    return new ProviderRequestError(
       phase === "validate" ? 400 : status,
+      phase === "validate" ? `GetResponse credential validation failed: ${message}` : message,
     );
   }
-  if (status === 429) return new GetresponseError("rate_limited", message, 429);
-  if (providerCode === 1016) return new GetresponseError("rate_limited", message, 429);
+  if (status === 429) return new ProviderRequestError(429, message, undefined, "rate_limited");
+  if (providerCode === 1016) return new ProviderRequestError(429, message, undefined, "rate_limited");
   if (providerCode === 1017 || providerCode === 1018) {
-    return new GetresponseError("provider_error", message, 502);
+    return new ProviderRequestError(502, message, undefined, "provider_error");
   }
   if (phase === "validate" && status >= 400 && status < 500) {
-    return new GetresponseError("invalid_input", `GetResponse credential validation failed: ${message}`, 400);
+    return new ProviderRequestError(
+      400,
+      `GetResponse credential validation failed: ${message}`,
+      undefined,
+      "invalid_input",
+    );
   }
   if (status >= 400 && status < 500) {
-    return new GetresponseError("invalid_input", message, status);
+    return new ProviderRequestError(status, message, undefined, "invalid_input");
   }
-  return new GetresponseError("provider_error", message, status >= 500 ? 502 : status);
+  return new ProviderRequestError(status >= 500 ? 502 : status, message, undefined, "provider_error");
 }
 
 function readGetresponseErrorMessage(payload: unknown) {
@@ -697,14 +722,14 @@ function readGetresponseErrorCode(payload: unknown) {
 function requireRecord(value: unknown, fieldName: string): Record<string, unknown> {
   const record = optionalRecord(value);
   if (!record) {
-    throw new GetresponseError("provider_error", `${fieldName} is invalid`, 502);
+    throw new ProviderRequestError(502, `${fieldName} is invalid`, undefined, "provider_error");
   }
   return record;
 }
 
 function requireArray(value: unknown, fieldName: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new GetresponseError("provider_error", `${fieldName} is invalid`, 502);
+    throw new ProviderRequestError(502, `${fieldName} is invalid`, undefined, "provider_error");
   }
   return value;
 }
@@ -712,7 +737,7 @@ function requireArray(value: unknown, fieldName: string): unknown[] {
 function requireString(value: unknown, fieldName: string) {
   const text = optionalString(value);
   if (!text) {
-    throw new GetresponseError("provider_error", `${fieldName} is missing`, 502);
+    throw new ProviderRequestError(502, `${fieldName} is missing`, undefined, "provider_error");
   }
   return text;
 }
@@ -720,7 +745,7 @@ function requireString(value: unknown, fieldName: string) {
 function requireInputString(value: unknown, fieldName: string) {
   const text = optionalInputString(value);
   if (!text) {
-    throw new GetresponseError("invalid_input", `${fieldName} is required`, 400);
+    throw new ProviderRequestError(400, `${fieldName} is required`, undefined, "invalid_input");
   }
   return text;
 }
@@ -728,21 +753,21 @@ function requireInputString(value: unknown, fieldName: string) {
 function requireInputRecord(value: unknown, fieldName: string): Record<string, unknown> {
   const record = optionalRecord(value);
   if (!record) {
-    throw new GetresponseError("invalid_input", `${fieldName} must be an object`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be an object`, undefined, "invalid_input");
   }
   return record;
 }
 
 function requireInputArray(value: unknown, fieldName: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new GetresponseError("invalid_input", `${fieldName} must be an array`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be an array`, undefined, "invalid_input");
   }
   return value;
 }
 
 function requireInputText(value: unknown, fieldName: string) {
   if (typeof value !== "string") {
-    throw new GetresponseError("invalid_input", `${fieldName} must be a string`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a string`, undefined, "invalid_input");
   }
   return value;
 }
@@ -755,10 +780,6 @@ function optionalInputString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function optionalInputBoolean(value: unknown) {
-  return typeof value === "boolean" ? value : undefined;
-}
-
 function optionalInputInteger(value: unknown) {
   return optionalInteger(value);
 }
@@ -766,7 +787,7 @@ function optionalInputInteger(value: unknown) {
 function optionalResponseInteger(value: unknown, fieldName: string) {
   if (value == null) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value)) {
-    throw new GetresponseError("provider_error", `${fieldName} is invalid`, 502);
+    throw new ProviderRequestError(502, `${fieldName} is invalid`, undefined, "provider_error");
   }
   return value;
 }
@@ -791,8 +812,4 @@ function optionalBooleanLike(value: unknown) {
   if (value === "true") return true;
   if (value === "false") return false;
   return null;
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }

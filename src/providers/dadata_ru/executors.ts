@@ -1,10 +1,21 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 import type { DadataRuActionName } from "./actions.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 
 const service = "dadata_ru";
 const dadataRuApiBaseUrl = "https://suggestions.dadata.ru/suggestions/api/4_1/rs";
@@ -40,6 +51,17 @@ export const dadataRuActionHandlers: ProviderActionHandlers<"dadata_ru", DadataR
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, dadataRuActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: dadataRuApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Token " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -191,8 +213,4 @@ function firstSuggestionValue(payload: unknown): string | undefined {
     return undefined;
   }
   return optionalString(optionalRecord(suggestions[0])?.value);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

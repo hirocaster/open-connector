@@ -5,7 +5,7 @@ import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const mindbodyApiBaseUrl = "https://api.mindbodyonline.com";
+export const mindbodyApiBaseUrl = "https://api.mindbodyonline.com";
 const mindbodyBusinessDirectoryPath = "/partnergateway/consumer/activity/v1/businesses";
 
 interface MindbodyBusinessPayload extends Record<string, unknown> {
@@ -150,7 +150,7 @@ function createMindbodyError(response: Response, payload: unknown, phase: Mindbo
   }
 
   if (phase === "execute" && (response.status === 401 || response.status === 403)) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
 
   if (phase === "execute" && [400, 404, 422].includes(response.status)) {

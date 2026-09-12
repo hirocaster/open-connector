@@ -7,8 +7,10 @@ import { compactObject, optionalBoolean, optionalRecord, optionalString, require
 import {
   defineApiKeyProviderExecutors,
   defineProviderProxy,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  requiredResponseRecord,
 } from "../provider-runtime.ts";
 
 const service = "streak";
@@ -21,7 +23,7 @@ export const streakActionHandlers: ProviderActionHandlers<"streak", StreakAction
   async get_current_user(_input, context) {
     const payload = await requestStreakJson("/users/me", context, "execute");
     return {
-      user: requireObject(payload, "Streak user response"),
+      user: requiredResponseRecord(payload, "Streak user response"),
       raw: payload,
     };
   },
@@ -35,25 +37,25 @@ export const streakActionHandlers: ProviderActionHandlers<"streak", StreakAction
     }
 
     return {
-      pipelines: payload.map((item) => requireObject(item, "Streak pipeline response")),
+      pipelines: payload.map((item) => requiredResponseRecord(item, "Streak pipeline response")),
       raw: payload,
     };
   },
   async get_pipeline(input, context) {
-    const pipelineKey = requiredString(input.pipelineKey, "pipelineKey", invalidInputError);
+    const pipelineKey = requiredString(input.pipelineKey, "pipelineKey", providerInputError);
     const payload = await requestStreakJson(`/pipelines/${encodeURIComponent(pipelineKey)}`, context, "execute");
 
     return {
-      pipeline: requireObject(payload, "Streak pipeline response"),
+      pipeline: requiredResponseRecord(payload, "Streak pipeline response"),
       raw: payload,
     };
   },
   async get_box(input, context) {
-    const boxKey = requiredString(input.boxKey, "boxKey", invalidInputError);
+    const boxKey = requiredString(input.boxKey, "boxKey", providerInputError);
     const payload = await requestStreakJson(`/boxes/${encodeURIComponent(boxKey)}`, context, "execute");
 
     return {
-      box: requireObject(payload, "Streak box response"),
+      box: requiredResponseRecord(payload, "Streak box response"),
       raw: payload,
     };
   },
@@ -78,7 +80,7 @@ export const credentialValidators: CredentialValidators = {
       },
       "validate",
     );
-    const user = requireObject(payload, "Streak user response");
+    const user = requiredResponseRecord(payload, "Streak user response");
     const email = optionalString(user.email);
     const userKey = optionalString(user.userKey) ?? optionalString(user.key);
 
@@ -164,16 +166,4 @@ function readErrorMessage(payload: unknown): string | undefined {
   }
 
   return optionalString(object.message) ?? optionalString(object.error) ?? optionalString(object.errorMessage);
-}
-
-function requireObject(value: unknown, label: string): Record<string, unknown> {
-  const object = optionalRecord(value);
-  if (!object) {
-    throw new ProviderRequestError(502, `${label} must be an object`);
-  }
-  return object;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

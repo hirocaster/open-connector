@@ -1,10 +1,14 @@
 import type { RuntimeActionHttpResult } from "../api/runtime-api.ts";
+import type { MigrationSource } from "./migration-source.ts";
 
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AesGcmSecretCodec } from "../secrets/secret-codec.ts";
+import { connectionRequestStoreTests } from "./connection-request-store.cases.ts";
+import { defaultMigrationSource } from "./migration-source.ts";
+import { createNodeRuntimeDatabase, migratePostgresRuntimeDatabase } from "./node-runtime-database.ts";
 import { assertPostgresSchemaReady, migratePostgresDatabase } from "./postgres-migrations.ts";
 import { PostgresRuntimeDatabase } from "./postgres-runtime-store.ts";
 import { RuntimeTokenService } from "./runtime-token-service.ts";
@@ -44,7 +48,12 @@ describe("PostgreSQL migrations with PGlite", () => {
       await expect(assertPostgresSchemaReady(pool)).resolves.toBeUndefined();
       await expect(migratePostgresDatabase({ pool })).resolves.toBeUndefined();
       await expect(pool.query("select name from runtime_migrations order by name")).resolves.toMatchObject({
-        rows: [{ name: "0010_runtime.sql" }, { name: "0011_runtime_token_connection_scope.sql" }],
+        rows: [
+          { name: "0010_runtime.sql" },
+          { name: "0011_runtime_token_connection_scope.sql" },
+          { name: "0012_marketplace.sql" },
+          { name: "0013_connection_requests.sql" },
+        ],
       });
 
       await pool.query("delete from runtime_migrations where name = $1", ["0010_runtime.sql"]);
@@ -61,6 +70,102 @@ describe("PostgreSQL migrations with PGlite", () => {
     } finally {
       await pool.end();
     }
+  });
+});
+
+describe("PostgreSQL migrations with a custom migration source", () => {
+  let testServer: PGliteTestServer;
+
+  beforeAll(async () => {
+    testServer = await startPGliteTestServer();
+  });
+
+  afterAll(async () => {
+    await testServer.server.stop();
+    await testServer.database.close();
+  });
+
+  it("validates and executes migrations through the same source", async () => {
+    const migrations: MigrationSource = {
+      readMigrations(dialect) {
+        return [
+          ...defaultMigrationSource.readMigrations(dialect),
+          { name: "9998_custom.sql", sql: "create table custom_records (id integer primary key)" },
+        ];
+      },
+    };
+    const unapplied: MigrationSource = {
+      readMigrations: () => [{ name: "9999_unapplied.sql", sql: "select 1" }],
+    };
+
+    const pool = new Pool({ connectionString: testServer.url, max: 1 });
+    try {
+      await migratePostgresDatabase({ pool, migrations });
+      await expect(assertPostgresSchemaReady(pool, migrations)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaReady(pool)).resolves.toBeUndefined();
+      await expect(assertPostgresSchemaReady(pool, unapplied)).rejects.toThrow(
+        "Missing migrations: 9999_unapplied.sql",
+      );
+      await expect(pool.query("select name from runtime_migrations order by name")).resolves.toMatchObject({
+        rows: [
+          { name: "0010_runtime.sql" },
+          { name: "0011_runtime_token_connection_scope.sql" },
+          { name: "0012_marketplace.sql" },
+          { name: "0013_connection_requests.sql" },
+          { name: "9998_custom.sql" },
+        ],
+      });
+      await expect(pool.query("select to_regclass($1) as name", ["custom_records"])).resolves.toMatchObject({
+        rows: [{ name: "custom_records" }],
+      });
+    } finally {
+      await pool.end();
+    }
+
+    await expect(PostgresRuntimeDatabase.open(testServer.url, { migrations: unapplied })).rejects.toThrow(
+      "Missing migrations: 9999_unapplied.sql",
+    );
+    const database = await PostgresRuntimeDatabase.open(testServer.url, { migrations });
+    await database.close();
+  });
+});
+
+describe("createNodeRuntimeDatabase with PostgreSQL", () => {
+  let testServer: PGliteTestServer;
+
+  beforeAll(async () => {
+    testServer = await startPGliteTestServer();
+  });
+
+  afterAll(async () => {
+    await testServer.server.stop();
+    await testServer.database.close();
+  });
+
+  it("migrates and opens the PostgreSQL runtime database through the lazily loaded driver", async () => {
+    await migratePostgresRuntimeDatabase({
+      connectionString: testServer.url,
+      connectionTimeoutMs: 5_000,
+      migrations: defaultMigrationSource,
+    });
+
+    const database = await createNodeRuntimeDatabase({
+      backend: "postgresql",
+      connectionString: testServer.url,
+      poolMax: 1,
+      migrations: defaultMigrationSource,
+    });
+    try {
+      await expect(database.connectionStore.list()).resolves.toEqual([]);
+    } finally {
+      await database.close();
+    }
+  });
+
+  it("rejects a non-PostgreSQL URL before loading the driver", async () => {
+    await expect(
+      createNodeRuntimeDatabase({ backend: "postgresql", connectionString: "mysql://localhost/db" }),
+    ).rejects.toThrow("OOMOL_CONNECT_DATABASE_URL must use the postgres: or postgresql: scheme.");
   });
 });
 
@@ -92,6 +197,8 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     await testServer.database.close();
   });
 
+  connectionRequestStoreTests(() => database);
+
   it("persists connections and OAuth data across database instances", async () => {
     const connection = await database.connectionStore.set("github", "default", githubCredential("github-token"));
     await database.oauthClientConfigStore.set({
@@ -121,6 +228,24 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     });
     await expect(database.oauthStateStore.take("state-1")).resolves.toMatchObject({ state: "state-1" });
     await expect(database.oauthStateStore.take("state-1")).resolves.toBeUndefined();
+  });
+
+  it("deletes OAuth states created before a cutoff", async () => {
+    await database.oauthStateStore.set({
+      service: "gmail",
+      state: "expired",
+      createdAt: "2026-06-30T00:00:00.000Z",
+    });
+    await database.oauthStateStore.set({
+      service: "gmail",
+      state: "current",
+      createdAt: "2026-06-30T00:00:01.000Z",
+    });
+
+    await database.oauthStateStore.deleteCreatedBefore("2026-06-30T00:00:01.000Z");
+
+    await expect(database.oauthStateStore.take("expired")).resolves.toBeUndefined();
+    await expect(database.oauthStateStore.take("current")).resolves.toMatchObject({ state: "current" });
   });
 
   it("preserves connection identity and rejects stale revisions", async () => {
@@ -264,6 +389,25 @@ describe("PostgresRuntimeDatabase with PGlite", () => {
     await expect(database.runLogStore.list()).resolves.toMatchObject({
       items: [{ id: "run-3" }, { id: "run-2" }],
     });
+  });
+
+  // PostgreSQL numbers its bind parameters, so a combined filter is what pins the `$n` sequence
+  // the shared run log query builder emits.
+  it("filters runs by action, caller, and status and reads one run by id", async () => {
+    const match = {
+      ...createRun("run-match", "2026-06-30T00:00:02.000Z", "gmail.send_message", "gmail"),
+      caller: "mcp" as const,
+      ok: false,
+    };
+
+    await database.runLogStore.add(createRun("run-other", "2026-06-30T00:00:01.000Z"));
+    await database.runLogStore.add(match);
+
+    await expect(
+      database.runLogStore.list({ actionId: "gmail.send_message", caller: "mcp", ok: false }),
+    ).resolves.toMatchObject({ items: [{ id: "run-match" }] });
+    await expect(database.runLogStore.get("run-match")).resolves.toEqual(match);
+    await expect(database.runLogStore.get("missing")).resolves.toBeUndefined();
   });
 
   it("rotates encrypted values and resets runtime data without removing migrations", async () => {

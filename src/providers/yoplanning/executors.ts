@@ -6,18 +6,18 @@ import type {
 } from "../../core/types.ts";
 import type { ApiKeyProviderContext, ProviderRuntimeHandler } from "../provider-runtime.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   defineApiKeyProviderExecutors,
   defineProviderProxy,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "yoplanning";
 const yoplanningApiBaseUrl = "https://yoplanning.pro/api/v3.1";
-const yoplanningRequestTimeoutMs = 30_000;
 
 type RequestPhase = "validate" | "execute";
 type YoplanningHandler = ProviderRuntimeHandler<ApiKeyProviderContext>;
@@ -43,7 +43,7 @@ export const yoplanningActionHandlers: Record<string, YoplanningHandler> = {
     );
   },
   async get_team(input, context) {
-    const teamId = readId(input.teamId, "teamId");
+    const teamId = requiredInputString(input.teamId, "teamId");
     return {
       team: requireResourcePayload(
         await requestYoplanningJson({
@@ -56,7 +56,7 @@ export const yoplanningActionHandlers: Record<string, YoplanningHandler> = {
     };
   },
   async list_online_products(input, context) {
-    const teamId = readId(input.teamId, "teamId");
+    const teamId = requiredInputString(input.teamId, "teamId");
     return parsePaginatedPayload(
       await requestYoplanningJson({
         context,
@@ -73,8 +73,8 @@ export const yoplanningActionHandlers: Record<string, YoplanningHandler> = {
     );
   },
   async get_online_product(input, context) {
-    const teamId = readId(input.teamId, "teamId");
-    const productId = readId(input.productId, "productId");
+    const teamId = requiredInputString(input.teamId, "teamId");
+    const productId = requiredInputString(input.productId, "productId");
     return {
       product: requireResourcePayload(
         await requestYoplanningJson({
@@ -87,8 +87,8 @@ export const yoplanningActionHandlers: Record<string, YoplanningHandler> = {
     };
   },
   async list_product_availabilities(input, context) {
-    const teamId = readId(input.teamId, "teamId");
-    const productId = readId(input.productId, "productId");
+    const teamId = requiredInputString(input.teamId, "teamId");
+    const productId = requiredInputString(input.productId, "productId");
     return parsePaginatedPayload(
       await requestYoplanningJson({
         context,
@@ -104,8 +104,8 @@ export const yoplanningActionHandlers: Record<string, YoplanningHandler> = {
     );
   },
   async get_availability_details(input, context) {
-    const teamId = readId(input.teamId, "teamId");
-    const availabilityId = readId(input.availabilityId, "availabilityId");
+    const teamId = requiredInputString(input.teamId, "teamId");
+    const availabilityId = requiredInputString(input.availabilityId, "availabilityId");
     return {
       availability: requireResourcePayload(
         await requestYoplanningJson({
@@ -166,7 +166,7 @@ async function requestYoplanningJson(input: YoplanningRequestInput): Promise<unk
     if (value !== undefined) url.searchParams.set(name, String(value));
   }
 
-  const timeout = createProviderTimeout(input.context.signal, yoplanningRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(url, {
       method: "GET",
@@ -234,8 +234,4 @@ function requireResourcePayload(payload: unknown, actionName: string): Record<st
   const resource = optionalRecord(payload);
   if (!resource) throw new ProviderRequestError(502, `YoPlanning returned an invalid ${actionName} response`);
   return resource;
-}
-
-function readId(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

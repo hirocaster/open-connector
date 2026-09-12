@@ -1,8 +1,8 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-runtime.ts";
 import type { VidaActionName } from "./actions.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, runProviderRequest } from "../provider-runtime.ts";
 
 export interface VidaCredentialCheck {
   providerAccountId?: string;
@@ -11,16 +11,7 @@ export interface VidaCredentialCheck {
   providerMetadata: Record<string, unknown>;
 }
 
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
-}
-
 export const vidaApiBaseUrl = "https://api.vida.dev";
-export const vidaDefaultRequestTimeoutMs = 30_000;
 
 type VidaPhase = "validate" | "execute";
 type VidaActionHandler = (input: Record<string, unknown>, fetcher: typeof fetch, apiKey: string) => Promise<unknown>;
@@ -108,7 +99,7 @@ export async function validateVidaCredential(
 }
 
 export async function executeVidaAction(
-  input: ApiKeyProviderActionInput & {
+  input: ApiKeyActionRequest & {
     actionName: VidaActionName;
     input: Record<string, unknown>;
   },
@@ -139,16 +130,14 @@ async function requestVidaJson(input: {
   fetcher: typeof fetch;
   phase: VidaPhase;
 }) {
-  const timeoutHandle = createProviderTimeout(undefined, vidaDefaultRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ label: "Vida" }, async (signal) => {
     const response = await input.fetcher(buildVidaUrl(input.path, input.apiKey, input.params), {
       method: "GET",
       headers: {
         accept: "application/json",
         "user-agent": providerUserAgent,
       },
-      signal: timeoutHandle.signal,
+      signal,
     });
     const payload = await readVidaPayload(response, { strictJson: response.ok });
 
@@ -157,22 +146,7 @@ async function requestVidaJson(input: {
     }
 
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Vida request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Vida request failed: ${error.message}` : "Vida request failed",
-    );
-  } finally {
-    timeoutHandle.cleanup();
-  }
+  });
 }
 
 function buildVidaUrl(path: string, apiKey: string, params: Record<string, string | undefined>) {
@@ -260,8 +234,4 @@ function readOptionalString(value: unknown) {
 
 function readOptionalNumberString(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : undefined;
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && error.name === "AbortError";
 }

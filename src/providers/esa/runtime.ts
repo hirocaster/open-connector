@@ -10,7 +10,13 @@ import {
   optionalString,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl, encodePathSegment, readBoundedResponseBytes } from "../../core/request.ts";
-import { ProviderRequestError, providerFetch, providerUserAgent, readProviderJsonBody } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  ProviderRequestError,
+  providerFetch,
+  providerUserAgent,
+  readProviderJsonBody,
+} from "../provider-runtime.ts";
 
 export const esaApiBaseUrl = "https://api.esa.io";
 
@@ -106,16 +112,6 @@ export async function requestEsaJson<T>(context: EsaActionContext, input: EsaReq
   }
 
   return payload as T;
-}
-
-export function buildEsaUrl(path: string, query?: Record<string, string | number | boolean | undefined>): string {
-  const url = new URL(`${esaApiBaseUrl}${path}`);
-  for (const [key, value] of Object.entries(query ?? {})) {
-    if (value !== undefined) {
-      url.searchParams.set(key, String(value));
-    }
-  }
-  return url.toString();
 }
 
 function esaHeaders(accessToken: string, hasJsonBody: boolean): Record<string, string> {
@@ -701,7 +697,7 @@ function readTeamName(input: Record<string, unknown>): string {
 function readRequiredString(input: Record<string, unknown>, fieldName: string): string {
   const value = optionalString(input[fieldName]);
   if (!value) {
-    throw invalidInput(`${fieldName} must be a non-empty string`);
+    throw providerInputError(`${fieldName} must be a non-empty string`);
   }
   return value;
 }
@@ -709,7 +705,7 @@ function readRequiredString(input: Record<string, unknown>, fieldName: string): 
 function readRequiredRawString(input: Record<string, unknown>, fieldName: string): string {
   const value = optionalRawString(input[fieldName]);
   if (value === undefined) {
-    throw invalidInput(`${fieldName} must be a string`);
+    throw providerInputError(`${fieldName} must be a string`);
   }
   return value;
 }
@@ -720,7 +716,7 @@ function readOptionalString(input: Record<string, unknown>, fieldName: string): 
     return undefined;
   }
   if (typeof value !== "string") {
-    throw invalidInput(`${fieldName} must be a string`);
+    throw providerInputError(`${fieldName} must be a string`);
   }
   return value.trim() || undefined;
 }
@@ -731,7 +727,7 @@ function readOptionalRawString(input: Record<string, unknown>, fieldName: string
     return undefined;
   }
   if (typeof value !== "string") {
-    throw invalidInput(`${fieldName} must be a string`);
+    throw providerInputError(`${fieldName} must be a string`);
   }
   return value;
 }
@@ -739,7 +735,7 @@ function readOptionalRawString(input: Record<string, unknown>, fieldName: string
 function readPositiveInteger(input: Record<string, unknown>, fieldName: string): number {
   const value = input[fieldName];
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw invalidInput(`${fieldName} must be a positive integer`);
+    throw providerInputError(`${fieldName} must be a positive integer`);
   }
   return value;
 }
@@ -754,7 +750,7 @@ function readOptionalPositiveInteger(input: Record<string, unknown>, fieldName: 
 function readOptionalPageSize(input: Record<string, unknown>, fieldName: string): number | undefined {
   const value = readOptionalPositiveInteger(input, fieldName);
   if (value !== undefined && value > 100) {
-    throw invalidInput(`${fieldName} must not exceed 100`);
+    throw providerInputError(`${fieldName} must not exceed 100`);
   }
   return value;
 }
@@ -765,7 +761,7 @@ function readOptionalBoolean(input: Record<string, unknown>, fieldName: string):
     return undefined;
   }
   if (typeof value !== "boolean") {
-    throw invalidInput(`${fieldName} must be a boolean`);
+    throw providerInputError(`${fieldName} must be a boolean`);
   }
   return value;
 }
@@ -776,7 +772,7 @@ function readOptionalStringArray(input: Record<string, unknown>, fieldName: stri
     return undefined;
   }
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim() === "")) {
-    throw invalidInput(`${fieldName} must be an array of non-empty strings`);
+    throw providerInputError(`${fieldName} must be an array of non-empty strings`);
   }
   return value;
 }
@@ -788,7 +784,7 @@ function readOriginalRevision(input: Record<string, unknown>): EsaJson | undefin
   }
   const revision = optionalRecord(value);
   if (!revision) {
-    throw invalidInput("originalRevision must be an object");
+    throw providerInputError("originalRevision must be an object");
   }
   return {
     body_md: readRequiredRawString(revision, "bodyMd"),
@@ -823,10 +819,6 @@ function readResponseString(value: unknown, fieldName: string): string {
   return result;
 }
 
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
 function createPostSummaryPrompt(post: EsaJson): string {
   const author = optionalRecord(post.created_by);
   const lines = [
@@ -859,14 +851,14 @@ function readAttachmentInput(
 ): { needsSigning: true; path: string } | { needsSigning: false; url: string } {
   if (value.startsWith("/")) {
     if (!value.startsWith("/uploads/")) {
-      throw invalidInput("url path must start with /uploads/");
+      throw providerInputError("url path must start with /uploads/");
     }
     return { needsSigning: true, path: value };
   }
 
-  const url = assertPublicHttpUrl(value, { fieldName: "url", createError: invalidInput });
+  const url = assertPublicHttpUrl(value, { fieldName: "url", createError: providerInputError });
   if (url.protocol !== "https:") {
-    throw invalidInput("url must use HTTPS");
+    throw providerInputError("url must use HTTPS");
   }
   if (signedAttachmentHosts.has(url.hostname)) {
     return { needsSigning: true, path: url.pathname };

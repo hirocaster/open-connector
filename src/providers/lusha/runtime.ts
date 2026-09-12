@@ -5,7 +5,7 @@ import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 import { compactObject, optionalRecord } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const lushaApiBaseUrl = "https://api.lusha.com";
+export const lushaApiBaseUrl = "https://api.lusha.com";
 
 type LushaActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
@@ -149,7 +149,7 @@ function mapLushaError(status: number, message: string, phase: "validate" | "exe
     return new ProviderRequestError(429, message);
   }
   if (status === 401 || status === 403) {
-    return new ProviderRequestError(phase === "validate" ? 400 : 409, message);
+    return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (status >= 400 && status < 500) {
     return new ProviderRequestError(400, message);

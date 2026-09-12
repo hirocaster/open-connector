@@ -1,6 +1,5 @@
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
-const crossrefApiBaseUrl = "https://api.crossref.org/v1";
-const crossrefRequestTimeoutMs = 30_000;
+export const crossrefApiBaseUrl = "https://api.crossref.org/v1";
 const crossrefMaxResponseBytes = 4 * 1024 * 1024;
 const crossrefCursorPrefix = "crossref_cursor_v1.";
 
@@ -281,9 +280,7 @@ async function requestCrossref(input: {
   apiKey?: string;
   phase?: "execute" | "validate";
 }) {
-  const timeoutHandle = createProviderTimeout(undefined, crossrefRequestTimeoutMs);
-
-  try {
+  return runProviderRequest({ label: "Crossref" }, async (signal) => {
     const headers = new Headers({
       accept: input.accept,
       "user-agent": providerUserAgent,
@@ -295,7 +292,7 @@ async function requestCrossref(input: {
     const response = await input.fetcher(buildCrossrefUrl(input.path, input.params), {
       method: "GET",
       headers,
-      signal: timeoutHandle.signal,
+      signal,
     });
     const body = await readCrossrefResponseText(response);
 
@@ -303,22 +300,7 @@ async function requestCrossref(input: {
       throw createCrossrefError(response.status, parseCrossrefPayload(body), input.phase ?? "execute", !!input.apiKey);
     }
     return { body, response };
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Crossref request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Crossref request failed: ${error.message}` : "Crossref request failed",
-    );
-  } finally {
-    timeoutHandle.cleanup();
-  }
+  });
 }
 
 function buildCrossrefUrl(path: string, params: Record<string, string | undefined>) {
@@ -880,13 +862,6 @@ function numberToString(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : undefined;
 }
 
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
 import { Buffer } from "node:buffer";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
@@ -897,4 +872,9 @@ import {
   optionalString,
   requiredString,
 } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+  runProviderRequest,
+} from "../provider-runtime.ts";

@@ -1,5 +1,4 @@
 import type {
-  CredentialValidationResult,
   ExecutionContext,
   ProviderExecutors,
   ProviderProxyExecutor,
@@ -15,6 +14,7 @@ import {
   ProviderRequestError,
   providerUserAgent,
   requireApiKeyCredential,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "precoro";
@@ -77,34 +77,6 @@ export const proxy: ProviderProxyExecutor = defineProviderProxy({
     );
   },
 });
-
-export async function validatePrecoroCredential(
-  input: Record<string, string>,
-  fetcher: ProviderFetch,
-): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(401, message));
-  const email = requiredString(input.email, "email", (message) => new ProviderRequestError(401, message));
-  const baseUrl = resolvePrecoroBaseUrl(input.region);
-  const payload = await precoroGetJson("/users", { apiKey, email, baseUrl, fetcher }, "validate");
-  const record = requireRecord(payload, "Precoro users response");
-  const users = readObjectArray(record.data);
-  const matchingUser = users.find((user) => user.email === email);
-  const label = formatUserLabel(matchingUser) ?? email;
-  return {
-    profile: {
-      accountId: matchingUser ? String(matchingUser.id ?? email) : email,
-      displayName: label,
-      grantedScopes: [],
-    },
-    grantedScopes: [],
-    metadata: {
-      apiBaseUrl: baseUrl,
-      region: readPrecoroRegion(input.region),
-      email,
-      validationEndpoint: "/users",
-    },
-  };
-}
 
 async function listPrecoroCollection(
   path: string,
@@ -237,14 +209,4 @@ function resolvePrecoroBaseUrl(region: unknown): string {
 
 function readPrecoroRegion(value: unknown): "com" | "us" {
   return typeof value === "string" && value.trim().toLowerCase() === "us" ? "us" : "com";
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
-function formatUserLabel(user: Record<string, unknown> | undefined): string | undefined {
-  if (!user) return undefined;
-  const name = [optionalString(user.firstname), optionalString(user.lastname)].filter(Boolean).join(" ");
-  return name || optionalString(user.email);
 }

@@ -3,14 +3,14 @@ import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import {
+  booleanString,
   compactObject,
   optionalBoolean,
   optionalNumber,
   optionalRecord,
   optionalString,
-  requiredString,
 } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, requiredInputString } from "../provider-runtime.ts";
 
 export const octaveApiBaseUrl = "https://app.octavehq.com";
 export const octaveValidationPath = "/api/v2/api-key/validate";
@@ -142,7 +142,7 @@ async function listAgents(
       limit: numberQuery(input.limit),
       orderField: optionalString(input.orderField),
       orderDirection: optionalString(input.orderDirection),
-      includeExperiments: booleanQuery(input.includeExperiments),
+      includeExperiments: booleanString(input.includeExperiments),
     }),
   });
   const body = requireObject(payload, "Octave returned an invalid agent list payload");
@@ -325,14 +325,6 @@ function requireObject(value: unknown, message: string): Record<string, unknown>
   throw new ProviderRequestError(502, message);
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
-}
-
 function numberQuery(value: unknown): string | undefined {
   return typeof value === "number" ? String(value) : undefined;
-}
-
-function booleanQuery(value: unknown): string | undefined {
-  return typeof value === "boolean" ? String(value) : undefined;
 }

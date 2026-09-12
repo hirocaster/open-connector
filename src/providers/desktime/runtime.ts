@@ -6,12 +6,12 @@ import { compactObject, optionalRecord, optionalString, requiredString } from ".
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
-const desktimeApiBaseUrl = "https://desktime.com/api/v2/json";
-const desktimeDefaultRequestTimeoutMs = 30_000;
+export const desktimeApiBaseUrl = "https://desktime.com/api/v2/json";
 
 type DeskTimePhase = "validate" | "execute";
 type DeskTimeHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
@@ -89,7 +89,7 @@ export const desktimeActionHandlers: ProviderActionHandlers<"desktime", DeskTime
       path: "/create-project",
       apiKey: context.apiKey,
       params: compactObject({
-        project: requiredString(input.project, "project", badInput),
+        project: requiredString(input.project, "project", providerInputError),
         task: optionalString(input.task),
       }),
       method: "POST",
@@ -141,7 +141,7 @@ async function requestDeskTimeJson(input: {
   context: ApiKeyProviderContext;
   phase: DeskTimePhase;
 }): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.context.signal, desktimeDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   let response: Response;
   try {
     response = await input.context.fetcher(buildDeskTimeUrl(input.path, input.apiKey, input.params), {
@@ -304,8 +304,4 @@ function readOptionalInteger(value: unknown): number | null {
   }
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isInteger(parsed) ? parsed : null;
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

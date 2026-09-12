@@ -29,6 +29,9 @@ describe("resolveProviderScenario", () => {
     expect(resolveProviderScenario(provider({ service: "store_leads", categories: ["Data", "Marketing"] }))).toBe(
       "cross-border-ecommerce",
     );
+    expect(resolveProviderScenario(provider({ service: "lingxing_mcp", categories: ["Productivity"] }))).toBe(
+      "cross-border-ecommerce",
+    );
   });
 
   it("maps detailed source categories to a task-oriented scenario", () => {

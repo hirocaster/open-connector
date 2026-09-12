@@ -15,8 +15,10 @@ import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/r
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 interface SeaTableBaseAccess {
@@ -42,8 +44,6 @@ interface SeaTableRequestOptions {
 
 type SeaTableActionHandler = (input: Record<string, unknown>, context: SeaTableContext) => Promise<unknown>;
 
-const requestTimeoutMs = 30_000;
-
 export const seatableActionHandlers: Record<string, SeaTableActionHandler> = {
   async get_metadata(_input, context) {
     return {
@@ -54,7 +54,7 @@ export const seatableActionHandlers: Record<string, SeaTableActionHandler> = {
     const payload = requireResponseObject(
       await requestBaseJson(context, "rows/", {
         query: {
-          table_name: requireInputString(input.tableName, "tableName"),
+          table_name: requiredInputString(input.tableName, "tableName"),
           view_name: optionalString(input.viewName),
           start: optionalInteger(input.start),
           limit: optionalInteger(input.limit),
@@ -66,12 +66,12 @@ export const seatableActionHandlers: Record<string, SeaTableActionHandler> = {
     return { rows: requireResponseObjectArray(payload.rows, "list rows") };
   },
   async get_row(input, context) {
-    const rowId = requireInputString(input.rowId, "rowId");
+    const rowId = requiredInputString(input.rowId, "rowId");
     return {
       row: requireResponseObject(
         await requestBaseJson(context, `rows/${encodeURIComponent(rowId)}/`, {
           query: {
-            table_name: requireInputString(input.tableName, "tableName"),
+            table_name: requiredInputString(input.tableName, "tableName"),
             convert_keys: optionalBoolean(input.convertKeys),
           },
         }),
@@ -84,7 +84,7 @@ export const seatableActionHandlers: Record<string, SeaTableActionHandler> = {
       await requestBaseJson(context, "rows/", {
         method: "POST",
         body: {
-          table_name: requireInputString(input.tableName, "tableName"),
+          table_name: requiredInputString(input.tableName, "tableName"),
           rows: objectArray(input.rows, "rows", providerInputError),
           apply_default: optionalBoolean(input.applyDefault),
         },
@@ -100,33 +100,33 @@ export const seatableActionHandlers: Record<string, SeaTableActionHandler> = {
   },
   async update_rows(input, context) {
     const updates = objectArray(input.updates, "updates", providerInputError).map((update) => ({
-      row_id: requireInputString(update.rowId, "updates[].rowId"),
+      row_id: requiredInputString(update.rowId, "updates[].rowId"),
       row: requiredRecord(update.row, "updates[].row", providerInputError),
     }));
     const payload = requireResponseObject(
       await requestBaseJson(context, "rows/", {
         method: "PUT",
         body: {
-          table_name: requireInputString(input.tableName, "tableName"),
+          table_name: requiredInputString(input.tableName, "tableName"),
           updates,
         },
       }),
       "update rows",
     );
-    return { success: requiredBoolean(payload.success, "success", providerResponseError), raw: payload };
+    return { success: requiredBoolean(payload.success, "success", seatableResponseError), raw: payload };
   },
   async delete_rows(input, context) {
     const payload = requireResponseObject(
       await requestBaseJson(context, "rows/", {
         method: "DELETE",
         body: {
-          table_name: requireInputString(input.tableName, "tableName"),
+          table_name: requiredInputString(input.tableName, "tableName"),
           row_ids: requiredStringArray(input.rowIds, "rowIds", providerInputError),
         },
       }),
       "delete rows",
     );
-    return { success: requiredBoolean(payload.success, "success", providerResponseError), raw: payload };
+    return { success: requiredBoolean(payload.success, "success", seatableResponseError), raw: payload };
   },
 };
 
@@ -196,7 +196,7 @@ async function getBaseAccess(
   phase: "execute" | "validate",
   signal?: AbortSignal,
 ): Promise<SeaTableBaseAccess> {
-  const timeout = createProviderTimeout(signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(signal);
   try {
     const response = await fetcher(new URL("api/v2.1/dtable/app-access-token/", serverUrl), {
       headers: requestHeaders(apiToken),
@@ -232,7 +232,7 @@ async function requestBaseJson(
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(url, {
       method: options.method ?? "GET",
@@ -286,10 +286,6 @@ async function readJsonResponse(
   throw new ProviderRequestError(response.status >= 500 ? 502 : 400, message, payload);
 }
 
-function requireInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, providerInputError);
-}
-
 function requireResponseObject(value: unknown, operation: string): Record<string, unknown> {
   const result = optionalRecord(value);
   if (!result) throw new ProviderRequestError(502, `SeaTable returned an invalid ${operation} response`, value);
@@ -315,10 +311,6 @@ function requireResponseInteger(value: unknown, fieldName: string): number {
   return result;
 }
 
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
+function seatableResponseError(message: string): ProviderRequestError {
   return new ProviderRequestError(502, `SeaTable response ${message}`);
 }

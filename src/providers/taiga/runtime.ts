@@ -5,6 +5,7 @@ import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/r
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
@@ -47,8 +48,6 @@ interface TaigaListResult {
 }
 
 type TaigaActionHandler = (input: Record<string, unknown>, context: TaigaContext) => Promise<unknown>;
-
-const requestTimeoutMs = 30_000;
 
 export const taigaActionHandlers: Record<string, TaigaActionHandler> = {
   list_projects: actionHandler("list_projects"),
@@ -209,7 +208,7 @@ async function requestWithoutToken(input: TaigaRequestInput, authToken?: string)
     "user-agent": providerUserAgent,
   });
   if (authToken) headers.set("authorization", `Bearer ${authToken}`);
-  const timeout = createProviderTimeout(input.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: input.method,
@@ -321,8 +320,4 @@ function createTaigaError(response: Response, phase: TaigaRequestInput["phase"])
   if (response.status == 404) return new ProviderRequestError(400, message);
   if (response.status == 409 || response.status == 429) return new ProviderRequestError(response.status, message);
   return new ProviderRequestError(502, message);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

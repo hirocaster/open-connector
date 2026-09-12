@@ -13,13 +13,12 @@ import {
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
 export const northbeamApiBaseUrl = "https://api.northbeam.io/v1";
-
-const northbeamRequestTimeoutMs = 30_000;
 
 type NorthbeamPhase = "validate" | "execute";
 type NorthbeamActionHandler = ProviderRuntimeHandler<NorthbeamContext>;
@@ -133,7 +132,7 @@ async function listSpend(input: Record<string, unknown>, context: NorthbeamConte
 }
 
 async function requestNorthbeamJson(options: NorthbeamRequestOptions): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(options.context.signal, northbeamRequestTimeoutMs);
+  const timeout = createProviderTimeout(options.context.signal);
   try {
     let response: Response;
     try {
@@ -260,8 +259,4 @@ function readRequiredInteger(value: unknown, field: string): number {
     return result;
   }
   throw new ProviderRequestError(502, `Northbeam returned an invalid ${field}`);
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

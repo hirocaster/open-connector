@@ -13,6 +13,7 @@ import {
 } from "../../core/cast.ts";
 import {
   createProviderTimeout,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderJsonBody,
@@ -21,7 +22,6 @@ import {
 export const amiliaApiOrigin = "https://app.amilia.com";
 
 const amiliaJwtHelpUrl = "https://app.amilia.com/apidocs/Index.html#authentication";
-const amiliaRequestTimeoutMs = 30_000;
 
 type AmiliaRequestPhase = "validate" | "execute";
 type AmiliaQueryValue = string | number | boolean | undefined;
@@ -63,7 +63,7 @@ export const amiliaActionHandlers: ProviderActionHandlers<"amilia", ProviderRunt
     };
   },
   async get_program(input, context) {
-    const programId = positiveInteger(input.programId, "programId", inputError);
+    const programId = positiveInteger(input.programId, "programId", providerInputError);
     const payload = await requestAmiliaJson({
       context,
       path: `/programs/${programId}`,
@@ -75,7 +75,7 @@ export const amiliaActionHandlers: ProviderActionHandlers<"amilia", ProviderRunt
     };
   },
   async list_program_activities(input, context) {
-    const programId = positiveInteger(input.programId, "programId", inputError);
+    const programId = positiveInteger(input.programId, "programId", providerInputError);
     const payload = await requestAmiliaJson({
       context,
       path: `/programs/${programId}/activities`,
@@ -96,7 +96,7 @@ export const amiliaActionHandlers: ProviderActionHandlers<"amilia", ProviderRunt
     };
   },
   async get_activity(input, context) {
-    const activityId = positiveInteger(input.activityId, "activityId", inputError);
+    const activityId = positiveInteger(input.activityId, "activityId", providerInputError);
     const payload = await requestAmiliaJson({
       context,
       path: `/activities/${activityId}`,
@@ -113,7 +113,7 @@ export const amiliaActionHandlers: ProviderActionHandlers<"amilia", ProviderRunt
 };
 
 export function normalizeAmiliaOrganization(value: unknown): string {
-  const organization = requiredString(value, "organization", inputError);
+  const organization = requiredString(value, "organization", providerInputError);
   if (organization.length > 200) {
     throw new ProviderRequestError(400, "organization must be 200 characters or fewer");
   }
@@ -176,7 +176,7 @@ async function requestAmiliaJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(input.context.signal, amiliaRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(url, {
       headers: {
@@ -274,16 +274,12 @@ function normalizeAmiliaList(payload: unknown, resourceName: string): AmiliaList
 }
 
 function readOptionalPositiveInteger(value: unknown, fieldName: string): number | undefined {
-  return value === undefined ? undefined : positiveInteger(value, fieldName, inputError);
+  return value === undefined ? undefined : positiveInteger(value, fieldName, providerInputError);
 }
 
 function readNonNegativeInteger(value: unknown): number | null {
   const result = optionalInteger(value);
   return result !== undefined && result >= 0 ? result : null;
-}
-
-function inputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function responseError(message: string): ProviderRequestError {

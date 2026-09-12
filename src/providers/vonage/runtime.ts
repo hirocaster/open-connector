@@ -5,16 +5,15 @@ import type { ProviderFetch } from "../provider-runtime.ts";
 import { Buffer } from "node:buffer";
 import { optionalBoolean, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderJsonBody,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 export const vonageApiBaseUrl = "https://rest.nexmo.com";
 export const vonageReportsApiBaseUrl = "https://api.nexmo.com";
-const vonageRequestTimeoutMs = 30_000;
 const invalidInputSmsStatuses = new Set(["2", "3", "6", "7", "12", "15", "17", "22", "23", "29", "33"]);
 
 export interface VonageContext {
@@ -53,7 +52,7 @@ export const vonageActionHandlers: ProviderActionHandlers<"vonage", VonageHandle
     return normalizeSms(await requestVonage({ path: "/sms/json", method: "POST", body, context, phase: "execute" }));
   },
   async list_sms_records(input, context) {
-    const direction = requiredString(input.direction, "direction", invalidInput);
+    const direction = requiredString(input.direction, "direction", providerInputError);
     validateShowConcatenated(direction, input.showConcatenated);
     const payload = await requestVonage({
       baseUrl: vonageReportsApiBaseUrl,
@@ -81,8 +80,8 @@ export const vonageActionHandlers: ProviderActionHandlers<"vonage", VonageHandle
     return normalizeSmsReport(payload);
   },
   async get_sms_record(input, context) {
-    const messageId = requiredString(input.messageId, "messageId", invalidInput);
-    const direction = requiredString(input.direction, "direction", invalidInput);
+    const messageId = requiredString(input.messageId, "messageId", providerInputError);
+    const direction = requiredString(input.direction, "direction", providerInputError);
     validateShowConcatenated(direction, input.showConcatenated);
     const payload = await requestVonage({
       baseUrl: vonageReportsApiBaseUrl,
@@ -108,8 +107,8 @@ export function createVonageContext(
   signal?: AbortSignal,
 ): VonageContext {
   return {
-    apiKey: requiredString(values.apiKey, "apiKey", invalidInput),
-    apiSecret: requiredString(values.apiSecret, "apiSecret", invalidInput),
+    apiKey: requiredString(values.apiKey, "apiKey", providerInputError),
+    apiSecret: requiredString(values.apiSecret, "apiSecret", providerInputError),
     fetcher,
     signal,
   };
@@ -138,8 +137,7 @@ async function requestVonage(input: VonageRequestInput): Promise<unknown> {
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
-  const timeout = createProviderTimeout(input.context.signal, vonageRequestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "Vonage" }, async (signal) => {
     const response = await input.context.fetcher(url.toString(), {
       method: input.method ?? "GET",
       headers: {
@@ -149,7 +147,7 @@ async function requestVonage(input: VonageRequestInput): Promise<unknown> {
         "user-agent": providerUserAgent,
       },
       body: input.body,
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readProviderJsonBody(response, {
       emptyBody: {},
@@ -157,18 +155,7 @@ async function requestVonage(input: VonageRequestInput): Promise<unknown> {
     });
     if (!response.ok) throw mapHttpError(response, payload, input.phase);
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) throw error;
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Vonage request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Vonage request failed: ${error.message}` : "Vonage request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function mapHttpError(response: Response, payload: unknown, phase: "validate" | "execute"): ProviderRequestError {
@@ -294,7 +281,7 @@ function readErrorMessage(payload: unknown): string | undefined {
 }
 
 function appendRequiredFormField(body: URLSearchParams, key: string, value: unknown): void {
-  body.set(key, requiredString(value, key, invalidInput));
+  body.set(key, requiredString(value, key, providerInputError));
 }
 
 function appendOptionalFormField(
@@ -303,8 +290,4 @@ function appendOptionalFormField(
   value: string | number | boolean | undefined,
 ): void {
   if (value !== undefined) body.set(key, String(value));
-}
-
-function invalidInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

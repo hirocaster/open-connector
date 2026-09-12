@@ -16,6 +16,7 @@ import {
   defineProviderExecutors,
   isAbortLikeError,
   normalizeProviderProxyHeaders,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderProxyErrorMessage,
@@ -27,7 +28,6 @@ import {
 const service = "dingtalk_bot";
 const apiBaseUrl = "https://oapi.dingtalk.com";
 const webhookPath = "/robot/send";
-const requestTimeoutMs = 30_000;
 const validationProbePayload = { msgtype: "__validation_probe__" };
 const validationSuccessCodes = new Set([40035, 400105]);
 
@@ -219,7 +219,7 @@ async function requestDingtalkBot(input: {
   fetcher: typeof fetch;
   signal?: AbortSignal;
 }): Promise<DingtalkBotRequestResult> {
-  const timeout = createProviderTimeout(input.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(buildWebhookUrl(input.accessToken, input.signingSecret), {
       method: "POST",
@@ -370,8 +370,4 @@ function applyWebhookAuthentication(url: URL, accessToken: string, signingSecret
 
 function buildProviderAccountId(accessToken: string): string {
   return `dingtalk_bot:${createHash("sha256").update(accessToken).digest("hex").slice(0, 24)}`;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

@@ -1,10 +1,15 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
-import { compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import { looseArray, compactObject, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const service = "opensea";
 const openseaApiBaseUrl = "https://api.opensea.io";
@@ -28,7 +33,7 @@ export const openseaActionHandlers: ProviderActionHandlers<"opensea", OpenseaAct
     const record = readObject(payload);
 
     return {
-      results: readArray(record.results),
+      results: looseArray(record.results),
       raw: record,
     };
   },
@@ -72,7 +77,7 @@ export const openseaActionHandlers: ProviderActionHandlers<"opensea", OpenseaAct
     const record = readObject(payload);
 
     return {
-      nfts: readArray(record.nfts).map(normalizeNft),
+      nfts: looseArray(record.nfts).map(normalizeNft),
       pagination: normalizePagination(record),
       raw: record,
     };
@@ -103,7 +108,7 @@ export const openseaActionHandlers: ProviderActionHandlers<"opensea", OpenseaAct
     const record = readObject(payload);
 
     return {
-      offers: readArray(record.offers).map(normalizeOrder),
+      offers: looseArray(record.offers).map(normalizeOrder),
       pagination: normalizePagination(record),
       raw: record,
     };
@@ -156,6 +161,16 @@ export const openseaActionHandlers: ProviderActionHandlers<"opensea", OpenseaAct
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, openseaActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: openseaApiBaseUrl,
+  auth: { type: "api_key_header", name: "x-api-key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const payload = await requestOpensea({
@@ -169,7 +184,7 @@ export const credentialValidators: CredentialValidators = {
       phase: "validate",
     });
     const record = readObject(payload);
-    const firstCollection = optionalRecord(readArray(record.collections)[0]);
+    const firstCollection = optionalRecord(looseArray(record.collections)[0]);
 
     return {
       profile: {
@@ -354,10 +369,6 @@ function readObject(payload: unknown): Record<string, unknown> {
   }
 
   return record;
-}
-
-function readArray(payload: unknown): unknown[] {
-  return Array.isArray(payload) ? payload : [];
 }
 
 function readRequiredString(value: unknown, fieldName: string): string {

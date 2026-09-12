@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderTransitFile } from "../provider-runtime.ts";
 
@@ -15,6 +15,9 @@ import { readBoundedResponseBytes } from "../../core/request.ts";
 import {
   createProviderFetch,
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  providerInputError,
+  providerResponseError,
   providerUserAgent,
   ProviderRequestError,
   readProviderTextBody,
@@ -40,6 +43,16 @@ export const latchshotActionHandlers: ProviderActionHandlers<"latchshot", Latchs
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, latchshotActionHandlers, {
   skipDnsValidation: true,
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: latchshotApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+  },
 });
 
 export const credentialValidators: CredentialValidators = {
@@ -245,22 +258,22 @@ function normalizeUsagePayload(payload: unknown): {
 
   return {
     customer: {
-      name: requiredString(customer.name, "customer.name", invalidResponseError),
-      plan: requiredString(customer.plan, "customer.plan", invalidResponseError),
+      name: requiredString(customer.name, "customer.name", providerResponseError),
+      plan: requiredString(customer.plan, "customer.plan", providerResponseError),
     },
     usage: {
-      period: requiredString(usage.period, "usage.period", invalidResponseError),
-      plan: requiredString(usage.plan, "usage.plan", invalidResponseError),
+      period: requiredString(usage.period, "usage.period", providerResponseError),
+      plan: requiredString(usage.plan, "usage.plan", providerResponseError),
       limit: requireNonNegativeInteger(usage.limit, "usage.limit"),
       remaining: requireNonNegativeInteger(usage.remaining, "usage.remaining"),
-      resetAt: requiredString(usage.resetAt, "usage.resetAt", invalidResponseError),
+      resetAt: requiredString(usage.resetAt, "usage.resetAt", providerResponseError),
       successful: requireNonNegativeInteger(usage.successful, "usage.successful"),
       failed: requireNonNegativeInteger(usage.failed, "usage.failed"),
       reserved: requireNonNegativeInteger(usage.reserved, "usage.reserved"),
       outputBytes: requireNonNegativeInteger(usage.outputBytes, "usage.outputBytes"),
       renderMs: requireNonNegativeInteger(usage.renderMs, "usage.renderMs"),
       updatedAt:
-        usage.updatedAt === null ? null : requiredString(usage.updatedAt, "usage.updatedAt", invalidResponseError),
+        usage.updatedAt === null ? null : requiredString(usage.updatedAt, "usage.updatedAt", providerResponseError),
     },
     upgradeRequest: normalizeUpgradeRequest(record.upgradeRequest),
     links: normalizeUsageLinks(record.links),
@@ -270,9 +283,9 @@ function normalizeUsagePayload(payload: unknown): {
 function normalizeUsageLinks(value: unknown): Record<string, string> {
   const links = requireObject(value, "Latchshot usage response is missing continuation links.");
   return {
-    plans: requiredString(links.plans, "links.plans", invalidResponseError),
-    requestPaidPlan: requiredString(links.requestPaidPlan, "links.requestPaidPlan", invalidResponseError),
-    requestPaidPlanDocs: requiredString(links.requestPaidPlanDocs, "links.requestPaidPlanDocs", invalidResponseError),
+    plans: requiredString(links.plans, "links.plans", providerResponseError),
+    requestPaidPlan: requiredString(links.requestPaidPlan, "links.requestPaidPlan", providerResponseError),
+    requestPaidPlanDocs: requiredString(links.requestPaidPlanDocs, "links.requestPaidPlanDocs", providerResponseError),
   };
 }
 
@@ -284,11 +297,11 @@ function normalizeUpgradeRequest(value: unknown): Record<string, unknown> | null
   return {
     id: requireNonNegativeInteger(request.id, "upgradeRequest.id", true),
     keyId: requireNonNegativeInteger(request.keyId, "upgradeRequest.keyId", true),
-    requestedPlan: requiredString(request.requestedPlan, "upgradeRequest.requestedPlan", invalidResponseError),
+    requestedPlan: requiredString(request.requestedPlan, "upgradeRequest.requestedPlan", providerResponseError),
     note: optionalRawString(request.note) ?? null,
-    status: requiredString(request.status, "upgradeRequest.status", invalidResponseError),
-    createdAt: requiredString(request.createdAt, "upgradeRequest.createdAt", invalidResponseError),
-    updatedAt: requiredString(request.updatedAt, "upgradeRequest.updatedAt", invalidResponseError),
+    status: requiredString(request.status, "upgradeRequest.status", providerResponseError),
+    createdAt: requiredString(request.createdAt, "upgradeRequest.createdAt", providerResponseError),
+    updatedAt: requiredString(request.updatedAt, "upgradeRequest.updatedAt", providerResponseError),
   };
 }
 
@@ -305,7 +318,7 @@ function requireNonNegativeInteger(value: unknown, fieldName: string, positive =
   if (resolved !== undefined && (positive ? resolved > 0 : resolved >= 0)) {
     return resolved;
   }
-  throw invalidResponseError(`${fieldName} is invalid.`);
+  throw providerResponseError(`${fieldName} is invalid.`);
 }
 
 function readIntegerHeader(headers: Headers, name: string): number | undefined {
@@ -319,12 +332,4 @@ function readIntegerHeader(headers: Headers, name: string): number | undefined {
 
 function displayPlan(plan: string): string {
   return plan === "trial" ? "Free" : `${plan[0]!.toUpperCase()}${plan.slice(1)}`;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function invalidResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

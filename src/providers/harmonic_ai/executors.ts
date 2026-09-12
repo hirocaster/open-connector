@@ -1,9 +1,15 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { optionalRecord, optionalString, stringRecord } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  isAbortLikeError,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 
 const service = "harmonic_ai";
 const harmonicAiApiBaseUrl = "https://api.harmonic.ai";
@@ -49,6 +55,16 @@ export const harmonicAiActionHandlers: ProviderActionHandlers<"harmonic_ai", Har
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, harmonicAiActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: harmonicAiApiBaseUrl,
+  auth: { type: "api_key_header", name: "apikey" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -275,13 +291,4 @@ function numberQueryValue(value: unknown): number | undefined {
 
 function stringArrayQueryValue(value: unknown): string[] | undefined {
   return Array.isArray(value) ? value.map((item) => String(item)) : undefined;
-}
-
-function isAbortLikeError(error: unknown): boolean {
-  return (
-    !!error &&
-    typeof error === "object" &&
-    "name" in error &&
-    String((error as { name?: unknown }).name) === "AbortError"
-  );
 }

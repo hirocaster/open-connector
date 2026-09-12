@@ -1,14 +1,16 @@
 import type { CatalogStore } from "../catalog-store.ts";
 import type { ActionPolicyService } from "../core/action-policy.ts";
+import type { TransitFileUpload } from "../core/types.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { RuntimeJwtVerifier } from "./api/runtime-jwt.ts";
-import type { ITransitFileService, TransitFileUpload } from "./files/transit-file-store.ts";
+import type { ITransitFileService } from "./files/transit-file-store.ts";
 import type { Logger } from "./logger.ts";
 import type { ISecretCodec } from "./secrets/secret-codec-core.ts";
 import type { RuntimeDatabase } from "./storage/runtime-database.ts";
 import type { Hono } from "hono";
 
 import { ConnectionService } from "../connection-service.ts";
+import { MarketplaceService } from "../marketplace/marketplace-service.ts";
 import { OAuthClientConfigService } from "../oauth/oauth-client-config-service.ts";
 import { OAuthCredentialRefreshService } from "../oauth/oauth-credential-refresh-service.ts";
 import { OAuthFlowService } from "../oauth/oauth-flow-service.ts";
@@ -41,6 +43,12 @@ export interface ConnectApp {
 }
 
 export async function createConnectApp(options: ConnectAppOptions): Promise<ConnectApp> {
+  const marketplace = new MarketplaceService({
+    catalog: options.catalog,
+    store: options.runtimeDatabase.marketplaceStore,
+    secretCodec: options.secretCodec,
+  });
+  await marketplace.initialize();
   const runtimeTokens = new RuntimeTokenService(options.runtimeDatabase.runtimeTokenStore, options.logger);
   const hasStoredRuntimeTokens = async (): Promise<boolean> => (await runtimeTokens.listTokens()).length > 0;
   const allowedCustomOAuth = new Set(options.allowedCustomOAuth);
@@ -54,10 +62,11 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
   });
   const connections = new ConnectionService({
     catalog: options.catalog,
-    oauthCredentials: new OAuthCredentialRefreshService(oauthClientConfigs),
+    oauthCredentials: new OAuthCredentialRefreshService(oauthClientConfigs, options.providerLoader),
     providerLoader: options.providerLoader,
     store: options.runtimeDatabase.connectionStore,
     logger: options.logger,
+    marketplace,
   });
   const actions = new ActionRunner({
     catalog: options.catalog,
@@ -65,20 +74,23 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
     connections,
     runs: options.runtimeDatabase.runLogStore,
     transitFiles: options.transitFiles,
-    actionPolicy: options.actionPolicy,
     logger: options.logger,
+    marketplace,
   });
 
   return {
     app: new ConnectServer({
       catalog: options.catalog,
+      publicOrigin: options.publicOrigin,
       providerLoader: options.providerLoader,
       connections,
       oauthClientConfigs,
       oauthFlow: new OAuthFlowService({
         clientConfigs: oauthClientConfigs,
         connections,
+        providerLoader: options.providerLoader,
         states: options.runtimeDatabase.oauthStateStore,
+        requests: options.runtimeDatabase.connectionRequestStore,
         secretCodec: options.secretCodec,
         isCustomClientConfigAllowed,
       }),
@@ -98,6 +110,7 @@ export async function createConnectApp(options: ConnectAppOptions): Promise<Conn
       },
       actionPolicy: options.actionPolicy,
       logger: options.logger,
+      marketplace,
       compressApiResponses: options.compressApiResponses,
     }).createApp(),
     runtimeAuthConfigured:

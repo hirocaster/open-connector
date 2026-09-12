@@ -1,4 +1,4 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-runtime.ts";
 
 import { optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
 import { ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
@@ -10,19 +10,11 @@ export interface LeadiqCredentialCheck {
   providerMetadata: Record<string, unknown>;
 }
 
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
-}
-
 export const leadiqApiBaseUrl = "https://api.leadiq.com";
 export const leadiqGraphqlPath = "/graphql";
 
 type LeadiqRequestPhase = "validate" | "execute";
-type LeadiqActionHandler = (input: ApiKeyProviderActionInput, fetcher: typeof fetch) => Promise<unknown>;
+type LeadiqActionHandler = (input: ApiKeyActionRequest, fetcher: typeof fetch) => Promise<unknown>;
 
 interface GraphqlRequest {
   query: string;
@@ -268,7 +260,7 @@ function readGraphqlErrorMessage(payload: Record<string, unknown>) {
 
 function mapLeadiqError(status: number, message: string, phase: LeadiqRequestPhase) {
   if (status === 401 || status === 403) {
-    return new ProviderRequestError(phase === "validate" ? 400 : 409, message);
+    return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (status === 402) {
     return new ProviderRequestError(402, message || "LeadIQ credits are insufficient");

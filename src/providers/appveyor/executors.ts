@@ -1,10 +1,12 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
 import {
   defineProviderExecutors,
+  defineProviderProxy,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   requireApiKeyCredential,
@@ -100,7 +102,7 @@ export const appveyorActionHandlers: ProviderActionHandlers<"appveyor", Appveyor
     const artifacts = await appveyorGetJson({
       context,
       accountName: resolveAccountName(input, context),
-      path: `/buildjobs/${encodeURIComponent(requiredString(input.jobId, "jobId", invalidInputError))}/artifacts`,
+      path: `/buildjobs/${encodeURIComponent(requiredString(input.jobId, "jobId", providerInputError))}/artifacts`,
       phase: "execute",
     });
 
@@ -123,6 +125,22 @@ export const executors: ProviderExecutors = defineProviderExecutors<AppveyorActi
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context): Promise<string> {
+    const credential = await requireApiKeyCredential(context, service);
+    const accountName = readOptionalNonEmptyString(credential.metadata.accountName);
+    return accountName
+      ? `${appveyorApiBaseUrl}/api/account/${encodeURIComponent(accountName)}`
+      : `${appveyorApiBaseUrl}/api`;
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
   },
 });
 
@@ -306,8 +324,4 @@ function readOptionalNonEmptyString(value: unknown): string | undefined {
 
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

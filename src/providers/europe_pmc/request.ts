@@ -1,5 +1,5 @@
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { providerUserAgent, ProviderRequestError, runProviderRequest } from "../provider-runtime.ts";
 
 export const europePmcApiBaseUrl = "https://www.ebi.ac.uk/europepmc/webservices/rest";
 export const europePmcAnnotationsApiBaseUrl = "https://www.ebi.ac.uk/europepmc/annotations_api";
@@ -61,9 +61,7 @@ export async function requestEuropePmcText(input: {
   accept: string;
   fetcher: typeof fetch;
 }): Promise<{ body: string; contentType: string | null }> {
-  const timeoutHandle = createProviderTimeout(undefined, requestTimeoutMs);
-
-  try {
+  return runProviderRequest({ timeoutMs: requestTimeoutMs, label: "Europe PMC" }, async (signal) => {
     const headers = new Headers({
       accept: input.accept,
       "user-agent": providerUserAgent,
@@ -77,7 +75,7 @@ export async function requestEuropePmcText(input: {
         method: input.method ?? "GET",
         headers,
         ...(input.jsonBody === undefined ? {} : { body: JSON.stringify(input.jsonBody) }),
-        signal: timeoutHandle.signal,
+        signal,
       },
     );
     const body = await response.text();
@@ -90,22 +88,7 @@ export async function requestEuropePmcText(input: {
       body,
       contentType: response.headers.get("content-type"),
     };
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-
-    if (timeoutHandle.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Europe PMC request timed out");
-    }
-
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Europe PMC request failed: ${error.message}` : "Europe PMC request failed",
-    );
-  } finally {
-    timeoutHandle.cleanup();
-  }
+  });
 }
 
 function buildEuropePmcUrl(baseUrl: string, path: string, params: Record<string, QueryParameter> = {}) {
@@ -157,8 +140,4 @@ function extractErrorMessage(body: string) {
 
 function readOptionalString(value: unknown) {
   return optionalString(value)?.trim() || undefined;
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
 }

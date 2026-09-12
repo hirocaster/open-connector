@@ -1,4 +1,9 @@
-import type { CredentialValidationResult, CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidationResult,
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
@@ -6,14 +11,15 @@ import { compactObject, optionalString, requiredString } from "../../core/cast.t
 import {
   createProviderTimeout,
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
   isAbortLikeError,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
 const service = "la_growth_machine";
 const laGrowthMachineApiBaseUrl = "https://apiv2.lagrowthmachine.com/flow";
-const laGrowthMachineRequestTimeoutMs = 30_000;
 
 type JsonObject = Record<string, unknown>;
 type LaGrowthMachineContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -121,6 +127,16 @@ export const laGrowthMachineActionHandlers: ProviderActionHandlers<"la_growth_ma
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, laGrowthMachineActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: laGrowthMachineApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     return validateLaGrowthMachineCredential(
@@ -170,7 +186,7 @@ async function requestLaGrowthMachine(request: {
     appendQueryValue(url, key, value);
   }
 
-  const timeout = createProviderTimeout(request.context.signal, laGrowthMachineRequestTimeoutMs);
+  const timeout = createProviderTimeout(request.context.signal);
   let response: Response;
   let payload: unknown;
   try {
@@ -351,8 +367,4 @@ function hasLeadMutationIdentifier(value: Record<string, unknown>): boolean {
 
 function hasNonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

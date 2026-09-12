@@ -13,7 +13,13 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import { encodePathSegment, queryParams } from "../../core/request.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerInputError,
+  ProviderRequestError,
+  providerResponseError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 import {
   ouraApiBaseUrl,
   ouraDocumentCollections,
@@ -22,7 +28,6 @@ import {
 } from "./collections.ts";
 
 const ouraPersonalInfoPath = `${ouraUserCollectionPath}/personal_info`;
-const ouraRequestTimeoutMs = 30_000;
 
 type OuraRequestPhase = "validate" | "execute";
 type OuraActionHandler = ProviderRuntimeHandler<OAuthProviderContext>;
@@ -60,7 +65,7 @@ export async function fetchOuraAccountProfile(
     phase: "validate",
     signal,
   });
-  const userId = requiredString(personalInfo.id, "id", providerOutput);
+  const userId = requiredString(personalInfo.id, "id", providerResponseError);
   const email = optionalString(personalInfo.email);
 
   return {
@@ -131,7 +136,7 @@ async function listOuraDocuments(
   });
 
   return {
-    documents: objectArray(payload.data, "data", providerOutput),
+    documents: objectArray(payload.data, "data", providerResponseError),
     nextToken: optionalString(payload.next_token) ?? null,
   };
 }
@@ -141,7 +146,7 @@ async function getOuraDocument(
   input: Record<string, unknown>,
   context: OAuthProviderContext,
 ): Promise<unknown> {
-  const documentId = requiredString(input.documentId, "documentId", badInput);
+  const documentId = requiredString(input.documentId, "documentId", providerInputError);
 
   return {
     document: await requestOuraObject({
@@ -182,7 +187,7 @@ async function requestOuraObject(input: OuraRequestInput): Promise<Record<string
     url.searchParams.set(key, value);
   }
 
-  const timeout = createProviderTimeout(input.signal, ouraRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: "GET",
@@ -286,12 +291,4 @@ function extractOuraErrorMessage(payload: unknown): string | undefined {
 
 function joinCommaSeparated(value: string[] | undefined): string | undefined {
   return value && value.length > 0 ? value.join(",") : undefined;
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerOutput(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
 }

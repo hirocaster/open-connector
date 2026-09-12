@@ -1,14 +1,21 @@
-import type { CredentialValidators, ExecutionContext, ProviderExecutors } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ExecutionContext,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+} from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ProviderFetch } from "../provider-runtime.ts";
 
 import { createHash } from "node:crypto";
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   defineProviderExecutors,
+  defineProviderProxy,
   providerUserAgent,
   ProviderRequestError,
   requireApiKeyCredential,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "minimax";
@@ -29,7 +36,7 @@ export const minimaxActionHandlers: ProviderActionHandlers<"minimax", MinimaxAct
     return minimaxGetJson("/v1/models", context);
   },
   retrieve_model(input, context) {
-    const modelId = readInputString(input.modelId, "modelId");
+    const modelId = requiredInputString(input.modelId, "modelId");
     return minimaxGetJson(`/v1/models/${encodeURIComponent(modelId)}`, context);
   },
   create_response(input, context) {
@@ -49,22 +56,22 @@ export const minimaxActionHandlers: ProviderActionHandlers<"minimax", MinimaxAct
     return minimaxPostJson("/v1/video_generation", normalizeMinimaxVideoBody(input), context);
   },
   query_video_generation(input, context) {
-    const taskId = readInputString(input.task_id, "task_id");
+    const taskId = requiredInputString(input.task_id, "task_id");
     return minimaxGetJson(`/v1/query/video_generation?task_id=${encodeURIComponent(taskId)}`, context);
   },
   query_video_generation_v2(input, context) {
-    const taskId = readInputString(input.task_id, "task_id");
+    const taskId = requiredInputString(input.task_id, "task_id");
     return minimaxGetJson(`/v2/query/video_generation/${encodeURIComponent(taskId)}`, context);
   },
   list_video_generation_v2(input, context) {
     return minimaxGetJson(createVideoGenerationV2ListPath(input), context);
   },
   delete_video_generation_v2(input, context) {
-    const taskId = readInputString(input.task_id, "task_id");
+    const taskId = requiredInputString(input.task_id, "task_id");
     return minimaxDeleteJson(`/v2/video_generation/${encodeURIComponent(taskId)}`, context);
   },
   download_video(input, context) {
-    const fileId = readInputString(input.file_id, "file_id");
+    const fileId = requiredInputString(input.file_id, "file_id");
     return minimaxGetJson(`/v1/files/retrieve?file_id=${encodeURIComponent(fileId)}`, context);
   },
   text_to_audio(input, context) {
@@ -84,6 +91,24 @@ export const executors: ProviderExecutors = defineProviderExecutors<MinimaxActio
       fetcher,
       signal: context.signal,
     };
+  },
+});
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  async baseUrl(context) {
+    const credential = await requireApiKeyCredential(context, service);
+    const apiBaseUrl = optionalString(credential.metadata.apiBaseUrl) ?? minimaxApiBaseUrl;
+    if (apiBaseUrl !== minimaxApiBaseUrl && apiBaseUrl !== minimaxChinaApiBaseUrl) {
+      throw new ProviderRequestError(400, "minimax proxy requires an official regional apiBaseUrl");
+    }
+    return apiBaseUrl;
+  },
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("content-type")) headers.set("content-type", "application/json");
   },
 });
 
@@ -362,10 +387,6 @@ function assertStreamingDisabled(input: Record<string, unknown>): void {
   if (input.stream === true) {
     throw new ProviderRequestError(400, "stream=true is not supported by connector actions");
   }
-}
-
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function trimString(value: unknown): string | undefined {

@@ -1,4 +1,4 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
@@ -8,6 +8,7 @@ import { assertPublicHttpUrl, encodePathSegment, readBoundedResponseBytes } from
 import {
   createProviderTimeout,
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
   isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
@@ -34,7 +35,6 @@ type OpenAiActionHandler = (input: Record<string, unknown>, context: OpenAiActio
 const service = "openai";
 const openaiApiBaseUrl = "https://api.openai.com/v1";
 const openaiAudioSourceMaxBytes = 25 * 1024 * 1024;
-const openaiAudioSourceFetchTimeoutMs = 30_000;
 
 export const openaiActionHandlers: ProviderActionHandlers<"openai", OpenAiActionHandler> = {
   list_models(_input, context) {
@@ -85,6 +85,16 @@ export const openaiActionHandlers: ProviderActionHandlers<"openai", OpenAiAction
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, openaiActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: openaiApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher }) {
@@ -561,7 +571,7 @@ async function fetchPublicAudioUrl(
   context: Pick<OpenAiActionContext, "fetcher" | "signal">,
 ): Promise<Response> {
   assertPublicAudioUrl(url);
-  const timeout = createProviderTimeout(context.signal, openaiAudioSourceFetchTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   let response: Response;
   try {
     response = await context.fetcher(url, { signal: timeout.signal });

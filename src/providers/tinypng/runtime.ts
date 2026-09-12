@@ -153,9 +153,8 @@ async function outputImage(input: Record<string, unknown>, context: ApiKeyProvid
     imageHeight: readHeaderInteger(response.headers, "Image-Height"),
     image: {
       name,
-      mimetype: mimeType,
+      mimeType,
       downloadUrl: upload.downloadUrl,
-      fileId: upload.fileId,
       sizeBytes: upload.sizeBytes,
     },
   });

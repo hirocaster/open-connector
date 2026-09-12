@@ -12,17 +12,20 @@ import {
   requiredRecord,
   requiredString,
 } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 
 export const eversignApiBaseUrl = "https://api.eversign.com";
 export const eversignValidationPath = "/business";
 
-const eversignRequestTimeoutMs = 30_000;
-
 type EversignPhase = "validate" | "execute";
 
 interface EversignCredentialSummary {
-  primary: {
+  primary?: {
     businessId: number;
     businessName: string;
   };
@@ -54,7 +57,7 @@ export const eversignActionHandlers: ProviderActionHandlers<
       phase: "execute",
       method: "POST",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
       },
       body: buildCreateDocumentBody(input),
     });
@@ -72,7 +75,7 @@ export const eversignActionHandlers: ProviderActionHandlers<
       phase: "execute",
       method: "POST",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
       },
       body: buildCreateDocumentFromTemplateBody(input),
     });
@@ -89,8 +92,8 @@ export const eversignActionHandlers: ProviderActionHandlers<
       signal: context.signal,
       phase: "execute",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
-        document_hash: requiredString(input.documentHash, "documentHash", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
+        document_hash: requiredString(input.documentHash, "documentHash", providerInputError),
       },
     });
     return {
@@ -106,7 +109,7 @@ export const eversignActionHandlers: ProviderActionHandlers<
       signal: context.signal,
       phase: "execute",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
         type: optionalString(input.type) ?? "all",
         limit: readOptionalPositiveInteger(input.limit, "limit"),
         page: readOptionalPositiveInteger(input.page, "page"),
@@ -127,7 +130,7 @@ export const eversignActionHandlers: ProviderActionHandlers<
       signal: context.signal,
       phase: "execute",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
         type: optionalString(input.type) ?? "templates",
         limit: readOptionalPositiveInteger(input.limit, "limit"),
         page: readOptionalPositiveInteger(input.page, "page"),
@@ -149,11 +152,11 @@ export const eversignActionHandlers: ProviderActionHandlers<
       phase: "execute",
       method: "POST",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
       },
       body: {
-        document_hash: requiredString(input.documentHash, "documentHash", inputError),
-        signer_id: positiveInteger(input.signerId, "signerId", inputError),
+        document_hash: requiredString(input.documentHash, "documentHash", providerInputError),
+        signer_id: positiveInteger(input.signerId, "signerId", providerInputError),
       },
     });
     const result = requiredRecord(payload, "reminder result", responseError);
@@ -172,13 +175,13 @@ export const eversignActionHandlers: ProviderActionHandlers<
       phase: "execute",
       method: "POST",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
       },
       body: compactObject({
-        document_hash: requiredString(input.documentHash, "documentHash", inputError),
-        signer_id: positiveInteger(input.signerId, "signerId", inputError),
-        new_signer_name: requiredString(input.newSignerName, "newSignerName", inputError),
-        new_signer_email: requiredString(input.newSignerEmail, "newSignerEmail", inputError),
+        document_hash: requiredString(input.documentHash, "documentHash", providerInputError),
+        signer_id: positiveInteger(input.signerId, "signerId", providerInputError),
+        new_signer_name: requiredString(input.newSignerName, "newSignerName", providerInputError),
+        new_signer_email: requiredString(input.newSignerEmail, "newSignerEmail", providerInputError),
         reason: optionalString(input.reason),
       }),
     });
@@ -190,7 +193,7 @@ export const eversignActionHandlers: ProviderActionHandlers<
   },
 
   async get_audit_log(input, context) {
-    const documentHash = requiredString(input.documentHash, "documentHash", inputError);
+    const documentHash = requiredString(input.documentHash, "documentHash", providerInputError);
     const payload = await requestEversignJson({
       path: `/document/${encodeURIComponent(documentHash)}/audit_log`,
       apiKey: context.apiKey,
@@ -198,7 +201,7 @@ export const eversignActionHandlers: ProviderActionHandlers<
       signal: context.signal,
       phase: "execute",
       query: {
-        business_id: positiveInteger(input.businessId, "businessId", inputError),
+        business_id: positiveInteger(input.businessId, "businessId", providerInputError),
       },
     });
     return {
@@ -219,11 +222,8 @@ export async function validateEversignCredential(
     signal,
     phase: "validate",
   });
-  const businesses = readResponseArray(payload, "business list").map(normalizeBusiness);
+  const businesses = (payload == null ? [] : readResponseArray(payload, "business list")).map(normalizeBusiness);
   const primary = businesses.find((business) => business.isPrimary) ?? businesses[0];
-  if (!primary) {
-    throw new ProviderRequestError(400, "Xodo Sign returned no businesses for this API key");
-  }
 
   return {
     primary,
@@ -249,7 +249,7 @@ async function requestEversignJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(input.signal, eversignRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const response = await input.fetcher(url, {
       method: input.method ?? "GET",
@@ -262,6 +262,9 @@ async function requestEversignJson(input: {
       signal: timeout.signal,
     });
     const payload = await readEversignPayload(response);
+    if (response.ok && input.phase === "validate" && isNoBusinessesPayload(payload)) {
+      return [];
+    }
     if (!response.ok || isEversignErrorPayload(payload)) {
       throw mapEversignError(response.status, payload, input.phase);
     }
@@ -284,19 +287,19 @@ async function requestEversignJson(input: {
 
 function buildCreateDocumentBody(input: Record<string, unknown>) {
   const files = requireInputArray(input.files, "files").map((value, index) => {
-    const file = requiredRecord(value, `files[${index}]`, inputError);
+    const file = requiredRecord(value, `files[${index}]`, providerInputError);
     return compactObject({
-      name: requiredString(file.name, `files[${index}].name`, inputError),
+      name: requiredString(file.name, `files[${index}].name`, providerInputError),
       file_url: optionalString(file.fileUrl),
       file_id: optionalString(file.fileId),
     });
   });
   const signers = requireInputArray(input.signers, "signers").map((value, index) => {
-    const signer = requiredRecord(value, `signers[${index}]`, inputError);
+    const signer = requiredRecord(value, `signers[${index}]`, providerInputError);
     return compactObject({
-      id: positiveInteger(signer.id, `signers[${index}].id`, inputError),
-      name: requiredString(signer.name, `signers[${index}].name`, inputError),
-      email: requiredString(signer.email, `signers[${index}].email`, inputError),
+      id: positiveInteger(signer.id, `signers[${index}].id`, providerInputError),
+      name: requiredString(signer.name, `signers[${index}].name`, providerInputError),
+      email: requiredString(signer.email, `signers[${index}].email`, providerInputError),
       order: readOptionalPositiveInteger(signer.order, `signers[${index}].order`),
       pin: optionalString(signer.pin),
       message: optionalString(signer.message),
@@ -304,10 +307,10 @@ function buildCreateDocumentBody(input: Record<string, unknown>) {
     });
   });
   const recipients = readOptionalInputArray(input.recipients, "recipients")?.map((value, index) => {
-    const recipient = requiredRecord(value, `recipients[${index}]`, inputError);
+    const recipient = requiredRecord(value, `recipients[${index}]`, providerInputError);
     return compactObject({
-      name: requiredString(recipient.name, `recipients[${index}].name`, inputError),
-      email: requiredString(recipient.email, `recipients[${index}].email`, inputError),
+      name: requiredString(recipient.name, `recipients[${index}].name`, providerInputError),
+      email: requiredString(recipient.email, `recipients[${index}].email`, providerInputError),
       language: optionalString(recipient.language),
     });
   });
@@ -337,9 +340,9 @@ function buildCreateDocumentBody(input: Record<string, unknown>) {
 
 function buildCreateDocumentFromTemplateBody(input: Record<string, unknown>) {
   const signers = requireInputArray(input.signers, "signers").map((value, index) => {
-    const signer = requiredRecord(value, `signers[${index}]`, inputError);
+    const signer = requiredRecord(value, `signers[${index}]`, providerInputError);
     return compactObject({
-      role: requiredString(signer.role, `signers[${index}].role`, inputError),
+      role: requiredString(signer.role, `signers[${index}].role`, providerInputError),
       name: optionalString(signer.name),
       email: optionalString(signer.email),
       pin: optionalString(signer.pin),
@@ -349,25 +352,25 @@ function buildCreateDocumentFromTemplateBody(input: Record<string, unknown>) {
     });
   });
   const recipients = readOptionalInputArray(input.recipients, "recipients")?.map((value, index) => {
-    const recipient = requiredRecord(value, `recipients[${index}]`, inputError);
+    const recipient = requiredRecord(value, `recipients[${index}]`, providerInputError);
     return compactObject({
-      role: requiredString(recipient.role, `recipients[${index}].role`, inputError),
-      name: requiredString(recipient.name, `recipients[${index}].name`, inputError),
-      email: requiredString(recipient.email, `recipients[${index}].email`, inputError),
+      role: requiredString(recipient.role, `recipients[${index}].role`, providerInputError),
+      name: requiredString(recipient.name, `recipients[${index}].name`, providerInputError),
+      email: requiredString(recipient.email, `recipients[${index}].email`, providerInputError),
       language: optionalString(recipient.language),
     });
   });
   const fields = readOptionalInputArray(input.mergeFields, "mergeFields")?.map((value, index) => {
-    const field = requiredRecord(value, `mergeFields[${index}]`, inputError);
+    const field = requiredRecord(value, `mergeFields[${index}]`, providerInputError);
     return {
-      identifier: requiredString(field.identifier, `mergeFields[${index}].identifier`, inputError),
-      value: requiredRawString(field.value, `mergeFields[${index}].value`, inputError),
+      identifier: requiredString(field.identifier, `mergeFields[${index}].identifier`, providerInputError),
+      value: requiredRawString(field.value, `mergeFields[${index}].value`, providerInputError),
     };
   });
 
   return compactObject({
     sandbox: optionalBooleanFlag(input.sandbox),
-    template_id: requiredString(input.templateId, "templateId", inputError),
+    template_id: requiredString(input.templateId, "templateId", providerInputError),
     title: optionalString(input.title),
     message: optionalString(input.message),
     custom_requester_name: optionalString(input.customRequesterName),
@@ -398,6 +401,12 @@ async function readEversignPayload(response: Response) {
 function isEversignErrorPayload(payload: unknown) {
   const body = optionalRecord(payload);
   return body?.success === false;
+}
+
+function isNoBusinessesPayload(payload: unknown) {
+  const body = optionalRecord(payload);
+  const error = body ? optionalRecord(body.error) : undefined;
+  return optionalString(error?.type) === "no_businesses_found_for_user";
 }
 
 function mapEversignError(status: number, payload: unknown, phase: EversignPhase) {
@@ -534,7 +543,7 @@ function readOptionalPositiveInteger(value: unknown, fieldName: string) {
   if (value === undefined) {
     return undefined;
   }
-  return positiveInteger(value, fieldName, inputError);
+  return positiveInteger(value, fieldName, providerInputError);
 }
 
 function nullableResponseInteger(value: unknown, fieldName: string) {
@@ -542,10 +551,6 @@ function nullableResponseInteger(value: unknown, fieldName: string) {
     return null;
   }
   return integer(value, fieldName, responseError);
-}
-
-function inputError(message: string) {
-  return new ProviderRequestError(400, message);
 }
 
 function responseError(message: string) {

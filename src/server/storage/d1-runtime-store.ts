@@ -1,6 +1,11 @@
 import type { IConnectionStore, StoredConnection } from "../../connection-service.ts";
 import type { TokenPolicy } from "../../core/action-policy.ts";
 import type { ResolvedCredential } from "../../core/types.ts";
+import type {
+  IMarketplaceStore,
+  ProviderPreference,
+  StoredMarketplaceConfig,
+} from "../../marketplace/marketplace-service.ts";
 import type { IOAuthClientConfigStore, OAuthClientConfig } from "../../oauth/oauth-client-config-service.ts";
 import type { IOAuthStateStore, OAuthAuthorizationState } from "../../oauth/oauth-flow-service.ts";
 import type { D1DatabaseBinding } from "../cloudflare/cloudflare-bindings.ts";
@@ -13,14 +18,24 @@ import type {
 } from "./idempotency-store.ts";
 import type { RuntimeDatabase } from "./runtime-database.ts";
 import type { IRuntimePolicyStore, RuntimePolicyRecord } from "./runtime-policy-store.ts";
+import type { RuntimeRow } from "./runtime-sql.ts";
 import type { IRunLogStore, RunLog, RunLogListInput, RunLogPage, RunLogWriteResult } from "./runtime-store.ts";
 import type { IRuntimeTokenStore, RuntimeTokenRecord } from "./runtime-token-service.ts";
 
 import { parseRuntimeActionHttpResult } from "../api/runtime-api.ts";
 import { PlainTextSecretCodec } from "../secrets/secret-codec-core.ts";
-import { DEFAULT_RUN_LIMIT, decodeRunLogCursor, encodeRunLogCursor } from "./runtime-store.ts";
+import { ConnectionRequestStore } from "./connection-request-store.ts";
+import {
+  listRunLogs,
+  parseJson,
+  readRunLogRow,
+  readRuntimePolicyRow,
+  readRuntimeTokenRow,
+  readString,
+  runtimeTokenColumns,
+} from "./runtime-sql.ts";
+import { DEFAULT_RUN_LIMIT } from "./runtime-store.ts";
 
-type RuntimeRow = Record<string, unknown>;
 type SecretJsonTable = "oauth_client_configs";
 
 export interface D1RuntimeDatabaseOptions {
@@ -29,6 +44,7 @@ export interface D1RuntimeDatabaseOptions {
 }
 
 export class D1RuntimeDatabase implements RuntimeDatabase {
+  readonly connectionRequestStore: ConnectionRequestStore;
   readonly connectionStore: D1ConnectionStore;
   readonly oauthClientConfigStore: D1OAuthClientConfigStore;
   readonly oauthStateStore: D1OAuthStateStore;
@@ -36,9 +52,14 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
   readonly runtimePolicyStore: D1RuntimePolicyStore;
   readonly runLogStore: D1RunLogStore;
   readonly idempotencyStore: D1IdempotencyStore;
+  readonly marketplaceStore: IMarketplaceStore;
 
   constructor(database: D1DatabaseBinding, options: D1RuntimeDatabaseOptions = {}) {
     const secretCodec = options.secretCodec ?? new PlainTextSecretCodec();
+    this.connectionRequestStore = new ConnectionRequestStore(async (statements) => {
+      const results = await database.batch(statements.map(({ sql, values }) => database.prepare(sql).bind(...values)));
+      return results.map((result) => result.results ?? []);
+    }, secretCodec);
     this.connectionStore = new D1ConnectionStore(database, secretCodec);
     this.oauthClientConfigStore = new D1OAuthClientConfigStore(database, secretCodec);
     this.oauthStateStore = new D1OAuthStateStore(database, secretCodec);
@@ -46,6 +67,54 @@ export class D1RuntimeDatabase implements RuntimeDatabase {
     this.runtimePolicyStore = new D1RuntimePolicyStore(database);
     this.runLogStore = new D1RunLogStore(database, options.runLimit ?? DEFAULT_RUN_LIMIT);
     this.idempotencyStore = new D1IdempotencyStore(database, secretCodec);
+    this.marketplaceStore = new D1MarketplaceStore(database);
+  }
+}
+
+class D1MarketplaceStore implements IMarketplaceStore {
+  private readonly database: D1DatabaseBinding;
+
+  constructor(database: D1DatabaseBinding) {
+    this.database = database;
+  }
+
+  async getConfig(): Promise<StoredMarketplaceConfig | undefined> {
+    const row = await this.database.prepare("select value from marketplace_config where id = 1").first<RuntimeRow>();
+    return row ? parseJson<StoredMarketplaceConfig>(readString(row, "value")) : undefined;
+  }
+
+  async setConfig(config: StoredMarketplaceConfig): Promise<void> {
+    await this.database
+      .prepare(
+        "insert into marketplace_config (id, value) values (1, ?) on conflict(id) do update set value = excluded.value",
+      )
+      .bind(JSON.stringify(config))
+      .run();
+  }
+
+  async deleteConfig(): Promise<void> {
+    await this.database.prepare("delete from marketplace_config where id = 1").run();
+  }
+
+  async listProviderPreferences(): Promise<ProviderPreference[]> {
+    const { results } = await this.database
+      .prepare("select service, enabled, created_at, updated_at from provider_preferences order by service")
+      .all<RuntimeRow>();
+    return results.map((row) => ({
+      service: readString(row, "service"),
+      enabled: row.enabled === 1,
+      createdAt: readString(row, "created_at"),
+      updatedAt: readString(row, "updated_at"),
+    }));
+  }
+
+  async setProviderPreference(preference: ProviderPreference): Promise<void> {
+    await this.database
+      .prepare(
+        "insert into provider_preferences (service, enabled, created_at, updated_at) values (?, ?, ?, ?) on conflict(service) do update set enabled = excluded.enabled, updated_at = excluded.updated_at",
+      )
+      .bind(preference.service, preference.enabled ? 1 : 0, preference.createdAt, preference.updatedAt)
+      .run();
   }
 }
 
@@ -202,6 +271,10 @@ export class D1OAuthStateStore implements IOAuthStateStore {
     this.secretCodec = secretCodec;
   }
 
+  async deleteCreatedBefore(cutoff: string): Promise<void> {
+    await this.database.prepare("delete from oauth_states where created_at < ?").bind(cutoff).run();
+  }
+
   async set(state: OAuthAuthorizationState): Promise<void> {
     await this.database
       .prepare(
@@ -238,7 +311,7 @@ export class D1RuntimeTokenStore implements IRuntimeTokenStore {
       .prepare(
         `
         insert into runtime_tokens (
-          id, name, token_hash, allowed_actions, blocked_actions, allowed_proxies, allowed_connections, created_at, last_used_at
+          ${runtimeTokenColumns}
         )
         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
@@ -261,9 +334,8 @@ export class D1RuntimeTokenStore implements IRuntimeTokenStore {
     const { results } = await this.database
       .prepare(
         `
-        select id, name, token_hash, allowed_actions, blocked_actions, allowed_proxies, allowed_connections, created_at, last_used_at
+        select ${runtimeTokenColumns}
         from runtime_tokens
-        where revoked_at is null
         order by created_at desc, id desc
       `,
       )
@@ -275,9 +347,9 @@ export class D1RuntimeTokenStore implements IRuntimeTokenStore {
     const row = await this.database
       .prepare(
         `
-        select id, name, token_hash, allowed_actions, blocked_actions, allowed_proxies, allowed_connections, created_at, last_used_at
+        select ${runtimeTokenColumns}
         from runtime_tokens
-        where token_hash = ? and revoked_at is null
+        where token_hash = ?
       `,
       )
       .bind(tokenHash)
@@ -291,8 +363,8 @@ export class D1RuntimeTokenStore implements IRuntimeTokenStore {
         `
         update runtime_tokens
         set allowed_actions = ?, blocked_actions = ?, allowed_proxies = ?, allowed_connections = ?
-        where id = ? and revoked_at is null
-        returning id, name, token_hash, allowed_actions, blocked_actions, allowed_proxies, allowed_connections, created_at, last_used_at
+        where id = ?
+        returning ${runtimeTokenColumns}
       `,
       )
       .bind(
@@ -312,25 +384,8 @@ export class D1RuntimeTokenStore implements IRuntimeTokenStore {
   }
 
   async markUsed(id: string, usedAt: string): Promise<void> {
-    await this.database
-      .prepare("update runtime_tokens set last_used_at = ? where id = ? and revoked_at is null")
-      .bind(usedAt, id)
-      .run();
+    await this.database.prepare("update runtime_tokens set last_used_at = ? where id = ?").bind(usedAt, id).run();
   }
-}
-
-function readRuntimeTokenRow(row: RuntimeRow): RuntimeTokenRecord {
-  return {
-    id: readString(row, "id"),
-    name: readString(row, "name"),
-    tokenHash: readString(row, "token_hash"),
-    allowedActions: parseJson(readString(row, "allowed_actions")),
-    blockedActions: parseJson(readString(row, "blocked_actions")),
-    allowedProxies: parseJson(readString(row, "allowed_proxies")),
-    allowedConnections: parseJson(readOptionalString(row, "allowed_connections") ?? "[]"),
-    createdAt: readString(row, "created_at"),
-    lastUsedAt: readOptionalString(row, "last_used_at"),
-  };
 }
 
 export class D1RuntimePolicyStore implements IRuntimePolicyStore {
@@ -344,12 +399,7 @@ export class D1RuntimePolicyStore implements IRuntimePolicyStore {
     const row = await this.database
       .prepare("select value, updated_at from runtime_policy where id = 1")
       .first<RuntimeRow>();
-    return row
-      ? {
-          rules: parseJson(readString(row, "value")),
-          updatedAt: readString(row, "updated_at"),
-        }
-      : undefined;
+    return row ? readRuntimePolicyRow(row) : undefined;
   }
 
   async set(record: RuntimePolicyRecord): Promise<void> {
@@ -504,42 +554,18 @@ export class D1RunLogStore implements IRunLogStore {
   }
 
   async list(input: RunLogListInput = {}): Promise<RunLogPage> {
-    const limit = Math.max(1, Math.min(input.limit ?? this.limit, this.limit));
-    const cursor = decodeRunLogCursor(input.cursor);
-    const conditions: string[] = [];
-    const values: Array<string | number> = [];
-    if (cursor) {
-      conditions.push("(started_at < ? or (started_at = ? and id < ?))");
-      values.push(cursor.startedAt, cursor.startedAt, cursor.id);
-    }
-    if (input.service) {
-      conditions.push("service = ?");
-      values.push(input.service);
-    }
-    if (input.actionId) {
-      conditions.push("action_id = ?");
-      values.push(input.actionId);
-    }
-    if (input.caller) {
-      conditions.push("caller = ?");
-      values.push(input.caller);
-    }
-    if (input.ok !== undefined) {
-      conditions.push("ok = ?");
-      values.push(input.ok ? 1 : 0);
-    }
-    const where = conditions.length > 0 ? `where ${conditions.join(" and ")}` : "";
-    const { results } = await this.database
-      .prepare(`select service, value from runs ${where} order by started_at desc, id desc limit ?`)
-      .bind(...values, limit + 1)
-      .all<RuntimeRow>();
-    const runs = results.map(readRunLogRow);
-    const items = runs.slice(0, limit);
-
-    return {
-      items,
-      nextCursor: runs.length > limit && items.length > 0 ? encodeRunLogCursor(items[items.length - 1]) : undefined,
-    };
+    return listRunLogs(
+      input,
+      this.limit,
+      () => "?",
+      async (sql, values) => {
+        const { results } = await this.database
+          .prepare(sql)
+          .bind(...values)
+          .all<RuntimeRow>();
+        return results;
+      },
+    );
   }
 }
 
@@ -551,34 +577,4 @@ async function getSecretJson<T>(
 ): Promise<T | undefined> {
   const row = await database.prepare(`select value from ${table} where service = ?`).bind(service).first<RuntimeRow>();
   return row ? parseJson<T>(await secretCodec.decode(readString(row, "value"))) : undefined;
-}
-
-function readString(row: RuntimeRow, key: string): string {
-  const value = row[key];
-  if (typeof value !== "string") {
-    throw new Error(`Expected D1 column ${key} to be a string.`);
-  }
-
-  return value;
-}
-
-function readRunLogRow(row: RuntimeRow): RunLog {
-  const run = parseJson<RunLog>(readString(row, "value"));
-  return { ...run, service: readString(row, "service") };
-}
-
-function readOptionalString(row: RuntimeRow, key: string): string | undefined {
-  const value = row[key];
-  if (value == null) {
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    throw new Error(`Expected D1 column ${key} to be a string.`);
-  }
-
-  return value;
-}
-
-function parseJson<T>(value: string): T {
-  return JSON.parse(value) as T;
 }

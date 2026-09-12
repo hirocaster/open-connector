@@ -1,5 +1,4 @@
-const dataciteApiBaseUrl = "https://api.datacite.org";
-const dataciteRequestTimeoutMs = 30_000;
+export const dataciteApiBaseUrl = "https://api.datacite.org";
 
 type DatacitePhase = "validate" | "execute";
 
@@ -44,8 +43,8 @@ export async function executeDataciteAction(
     return requestDataciteJson({
       path: `/dois/${encodeURIComponent(normalizeDoi(doi))}`,
       params: compactObject({
-        affiliation: readOptionalBooleanString(input.affiliation),
-        publisher: readOptionalBooleanString(input.publisher),
+        affiliation: booleanString(input.affiliation),
+        publisher: booleanString(input.publisher),
       }),
       fetcher,
       apiKey,
@@ -85,9 +84,9 @@ function buildListParams(input: Record<string, unknown>): Record<string, string 
     "has-citations": readOptionalIntegerString(input.hasCitations),
     "has-references": readOptionalIntegerString(input.hasReferences),
     sort: readOptionalString(input.sort),
-    detail: readOptionalBooleanString(input.detail),
-    affiliation: readOptionalBooleanString(input.affiliation),
-    publisher: readOptionalBooleanString(input.publisher),
+    detail: booleanString(input.detail),
+    affiliation: booleanString(input.affiliation),
+    publisher: booleanString(input.publisher),
     "page[number]": readOptionalIntegerString(input.pageNumber),
     "page[size]": readOptionalIntegerString(input.pageSize),
     "page[cursor]": readOptionalString(input.pageCursor),
@@ -95,7 +94,7 @@ function buildListParams(input: Record<string, unknown>): Record<string, string 
 }
 
 async function requestDataciteJson(input: DataciteRequestInput) {
-  const timeoutHandle = createProviderTimeout(undefined, dataciteRequestTimeoutMs);
+  const timeoutHandle = createProviderTimeout(undefined);
   const url = new URL(input.path, `${dataciteApiBaseUrl}/`);
   for (const [name, value] of Object.entries(input.params)) {
     if (value !== undefined) {
@@ -220,17 +219,12 @@ function readOptionalIntegerString(value: unknown) {
   return typeof value === "number" && Number.isInteger(value) ? String(value) : undefined;
 }
 
-function readOptionalBooleanString(value: unknown) {
-  return typeof value === "boolean" ? String(value) : undefined;
-}
-
-function isAbortLikeError(error: unknown) {
-  return error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError");
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
 import { Buffer } from "node:buffer";
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { booleanString, compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import {
+  createProviderTimeout,
+  isAbortLikeError,
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";

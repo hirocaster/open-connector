@@ -51,6 +51,7 @@ import {
   OAuthAppDialog,
   splitClientConfigFieldValues,
 } from "./oauth-app-form";
+import { useOAuthAuthorizationOptions } from "./oauth-authorization-options";
 import {
   featuredProvidersForScenario,
   filterProvidersByScenario,
@@ -161,6 +162,7 @@ export interface OAuthAuthorizationRequestBody {
   clientSecret?: string;
   extra?: Record<string, string>;
   secretExtra?: Record<string, string>;
+  authorizationOptionIds?: string[];
 }
 
 export interface ManualOAuthAuthorizationInput {
@@ -646,7 +648,7 @@ function scenarioTranslationKey(scenario: ProviderDiscoveryScenario): string {
 function ProviderCard(props: ProviderCardProps): ReactNode {
   const t = useTranslate();
   const to = `/providers/${encodeURIComponent(props.provider.service)}`;
-  const locallyAvailable = isProviderLocallyAvailable(props.provider);
+  const locallyAvailable = isProviderLocallyAvailable(props.provider) || Boolean(props.status.marketplaceConnection);
   const actionLabel = !locallyAvailable
     ? t("providers.buttons.details")
     : props.status.noSetupRequired
@@ -713,6 +715,9 @@ function ProviderStatusBadges(props: {
         {t("providers.configuredBadge")}
       </Badge>,
     );
+    if (props.status.marketplaceConnection) {
+      badges.push(<Badge key="marketplace">{t("providers.marketplaceBadge")}</Badge>);
+    }
     if (props.status.connections.length > 1) {
       badges.push(
         <Badge key="connection-count">
@@ -780,7 +785,8 @@ function ProviderDetail(props: ProviderDetailProps): ReactNode {
   const selectedAuth = props.provider.auth.find((auth) => auth.type === selectedAuthType) ?? props.provider.auth[0];
   const oauthAuth = props.provider.auth.find((auth) => auth.type === "oauth2");
   const hasMultipleAuthMethods = props.provider.auth.length > 1;
-  const locallyAvailable = isProviderLocallyAvailable(props.provider);
+  const locallyAvailable =
+    isProviderLocallyAvailable(props.provider) || Boolean(props.connectionStatus.marketplaceConnection);
   const supportsCredentialConnections = props.provider.auth.some((auth) => shouldShowConnectionActions(auth));
   const connectionEditorOpen = !supportsCredentialConnections || creatingConnection || selectedConnection != null;
   const formConnectionName = creatingConnection ? newConnectionName.trim() : (selectedConnectionName ?? "");
@@ -924,6 +930,24 @@ function ProviderDetail(props: ProviderDetailProps): ReactNode {
               <p>{connectionDescription}</p>
             </div>
           </div>
+          {props.connectionStatus.marketplaceConnection ? (
+            <div className="provider-marketplace-connection">
+              <div>
+                <strong>{t("providers.marketplaceConnection.title")}</strong>
+                <span>
+                  {t("providers.marketplaceConnection.description", {
+                    name:
+                      typeof props.connectionStatus.marketplaceConnection.profile?.displayName === "string"
+                        ? props.connectionStatus.marketplaceConnection.profile.displayName
+                        : t("nav.marketplace"),
+                  })}
+                </span>
+              </div>
+              <Button asChild variant="outline" size="sm">
+                <Link to="/marketplace">{t("providers.marketplaceConnection.manage")}</Link>
+              </Button>
+            </div>
+          ) : null}
           {supportsCredentialConnections && (locallyAvailable || props.connections.length > 0) ? (
             <ConnectionManager
               connections={props.connections}
@@ -1156,7 +1180,9 @@ export function configurableConnectionsForProvider(
   connections: ConnectionRecord[],
   service: string,
 ): ConnectionRecord[] {
-  return usableConnectionsForService(connections, service);
+  return usableConnectionsForService(connections, service).filter(
+    (connection) => connection.authType !== "marketplace",
+  );
 }
 
 export function connectionDisplayLabel(connection: ConnectionRecord): string {
@@ -1204,8 +1230,9 @@ export function oauthAuthorizationRequestBody(
   service: string,
   connectionName: string,
   manual?: ManualOAuthAuthorizationInput,
+  authorizationOptionIds?: string[],
 ): OAuthAuthorizationRequestBody {
-  const body: OAuthAuthorizationRequestBody = { service, connectionName };
+  const body: OAuthAuthorizationRequestBody = { service, connectionName, authorizationOptionIds };
   if (manual) {
     const { extra, secretExtra } = splitClientConfigFieldValues(
       clientConfigFieldsFor(manual.auth),
@@ -1351,6 +1378,11 @@ function UnavailableProviderConnection(props: {
 function ConnectionForm(props: ConnectionFormProps): ReactNode {
   const t = useTranslate();
   const [values, setValues] = useState<Record<string, string>>({});
+  const authorizationOptions = props.auth.type === "oauth2" ? props.auth.authorizationOptions : undefined;
+  const { selectedOptionIds: selectedAuthorizationOptionIds, toggleOption } = useOAuthAuthorizationOptions(
+    authorizationOptions,
+    props.connection?.profile?.grantedScopes,
+  );
   const [manualClientId, setManualClientId] = useState("");
   const [manualClientSecret, setManualClientSecret] = useState("");
   const manualClientConfigFields = useMemo(() => clientConfigFieldsFor(props.auth), [props.auth]);
@@ -1446,6 +1478,7 @@ function ConnectionForm(props: ConnectionFormProps): ReactNode {
             props.provider.service,
             connectionName,
             props.oauthClientMode === "manual" ? { auth: props.auth, values: manualValues } : undefined,
+            selectedAuthorizationOptionIds,
           ),
         );
         if (result.authorizationUrl) {
@@ -1569,6 +1602,30 @@ function ConnectionForm(props: ConnectionFormProps): ReactNode {
             />
           ))}
         </>
+      ) : null}
+      {authorizationOptions?.length ? (
+        <div className="form-grid">
+          <Label>
+            <span>Permissions</span>
+          </Label>
+          {authorizationOptions.map((option) => {
+            const checked = selectedAuthorizationOptionIds.includes(option.id);
+            return (
+              <label key={option.id} className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={option.required}
+                  onChange={(event) => toggleOption(option.id, event.target.checked)}
+                />
+                <span>
+                  <strong>{option.label}</strong>
+                  <small className="block text-muted-foreground">{option.description}</small>
+                </span>
+              </label>
+            );
+          })}
+        </div>
       ) : null}
       {fields.map((field) => (
         <CredentialInput

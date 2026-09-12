@@ -2,6 +2,7 @@ import type { ResolvedCredential } from "../core/types.ts";
 import type { OAuthClientConfigService } from "./oauth-client-config-service.ts";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProviderLoader } from "../providers/provider-loader.ts";
 import { OAuthCredentialRefreshService } from "./oauth-credential-refresh-service.ts";
 
 type OAuthCredential = Extract<ResolvedCredential, { authType: "oauth2" }>;
@@ -54,6 +55,43 @@ describe("OAuthCredentialRefreshService", () => {
     );
 
     expect(refreshed.expiresAt).toBe(new Date(now + 3600_000).toISOString());
+  });
+
+  it("refreshes through a provider OAuth runtime and preserves connection identity", async () => {
+    const providerLoader = new ProviderLoader({
+      example: async () => ({
+        executors: {},
+        oauth: {
+          async refreshAccessToken() {
+            return {
+              accessToken: "provider-refreshed-token",
+              refreshToken: "provider-refreshed-token",
+              tokenType: "Bearer",
+              expiresAt: "2026-12-29T00:00:00.000Z",
+              metadata: { refreshedBy: "provider-runtime" },
+            };
+          },
+        },
+      }),
+    });
+    const credential = expiredCredential({ permissions: "read,write" });
+
+    const refreshed = await new OAuthCredentialRefreshService(clientConfigs, providerLoader).refresh(
+      "example",
+      credential,
+    );
+
+    expect(refreshed).toMatchObject({
+      authType: "oauth2",
+      accessToken: "provider-refreshed-token",
+      refreshToken: "provider-refreshed-token",
+      expiresAt: "2026-12-29T00:00:00.000Z",
+      profile: credential.profile,
+      metadata: {
+        permissions: "read,write",
+        refreshedBy: "provider-runtime",
+      },
+    });
   });
 
   it("uses a connection-scoped OAuth client config before the global config", async () => {
@@ -149,5 +187,20 @@ describe("OAuthCredentialRefreshService", () => {
 
     expect(refreshed.refreshToken).toBe("refresh-token");
     expect(refreshed.providerSecret).toEqual(credential.providerSecret);
+  });
+
+  it("forwards stored provider parameters during refresh", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ access_token: "new-access-token" }),
+    );
+    vi.stubGlobal("fetch", fetcher);
+    const credential = {
+      ...expiredCredential({ expires_in: 3600 }),
+      providerSecret: { oauthRefreshParameters: { employer: "employer-id" } },
+    };
+
+    await new OAuthCredentialRefreshService(clientConfigs).refresh("example", credential);
+
+    expect(String(fetcher.mock.calls[0]?.[1]?.body)).toContain("employer=employer-id");
   });
 });

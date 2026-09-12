@@ -1,13 +1,14 @@
-import type { CredentialValidationResult, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
+import type { ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   defineApiKeyProviderExecutors,
   defineProviderProxy,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 const service = "postmark";
@@ -90,35 +91,6 @@ export const postmarkActionHandlers: ProviderActionHandlers<"postmark", Postmark
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, postmarkActionHandlers);
-
-export async function validatePostmarkCredential(
-  input: Record<string, string>,
-  fetcher: typeof fetch,
-): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(401, message));
-  const server = await requestPostmarkJson<Record<string, unknown>>({
-    path: validationPath,
-    context: { apiKey, fetcher },
-    mode: "validate",
-  });
-  const serverId = optionalInteger(server.ID);
-  const serverName = optionalString(server.Name);
-  return {
-    profile: {
-      accountId: serverId !== undefined ? `postmark:server:${serverId}` : "postmark-server-token",
-      displayName: serverName || "Postmark Server Token",
-      grantedScopes: [],
-    },
-    grantedScopes: [],
-    metadata: {
-      validationEndpoint: validationPath,
-      serverId,
-      serverName,
-      serverLink: optionalString(server.ServerLink),
-      deliveryType: optionalString(server.DeliveryType),
-    },
-  };
-}
 
 async function editTemplate(input: Record<string, unknown>, context: ApiKeyProviderContext): Promise<unknown> {
   const body = { ...input };
@@ -259,10 +231,6 @@ function buildTemplatesQuery(input: Record<string, unknown>): Record<string, str
     TemplateType: optionalString(input.TemplateType),
     LayoutTemplate: optionalString(input.LayoutTemplate),
   });
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function stringifyPathValue(value: unknown, fieldName: string): string {

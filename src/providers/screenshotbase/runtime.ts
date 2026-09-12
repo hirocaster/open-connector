@@ -2,19 +2,18 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { optionalBoolean, optionalInteger, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  ProviderRequestError,
+  providerUserAgent,
+  requiredResponseRecord,
+} from "../provider-runtime.ts";
 
-const screenshotbaseApiBaseUrl = "https://api.screenshotbase.com";
+export const screenshotbaseApiBaseUrl = "https://api.screenshotbase.com";
 
 const screenshotbaseStatusPath = "/v1/status";
 const screenshotbaseTakePath = "/v1/take";
 const screenshotbaseRequestTimeoutMs = 95_000;
-
-class ScreenshotbaseError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number) {
-    super(status, message);
-  }
-}
 
 type ScreenshotbaseRequestPhase = "validate" | "execute";
 
@@ -43,7 +42,7 @@ export const screenshotbaseActionHandlers: Record<
     });
     const url = optionalString(payload.url);
     if (!url) {
-      throw new ScreenshotbaseError("provider_error", "screenshotbase capture response did not include url", 502);
+      throw new ProviderRequestError(502, "screenshotbase capture response did not include url");
     }
     return { url };
   },
@@ -80,7 +79,7 @@ async function getQuotaStatus(context: ApiKeyProviderContext, phase: Screenshotb
     fetcher: context.fetcher,
     phase,
   });
-  const quotas = requireObject(payload.quotas, "quotas");
+  const quotas = requiredResponseRecord(payload.quotas, "quotas");
 
   return {
     accountId: readNullableInteger(payload.account_id),
@@ -129,18 +128,17 @@ async function requestScreenshotbaseJson(input: ScreenshotbaseRequestInput) {
     if (!response.ok) {
       throw createScreenshotbaseError(response.status, payload, input.phase);
     }
-    return requireObject(payload, "response");
+    return requiredResponseRecord(payload, "response");
   } catch (error) {
-    if (error instanceof ScreenshotbaseError) {
+    if (error instanceof ProviderRequestError) {
       throw error;
     }
     if (timeoutHandle.didTimeout() || isAbortError(error)) {
-      throw new ScreenshotbaseError("provider_error", "screenshotbase request timed out", 504);
+      throw new ProviderRequestError(504, "screenshotbase request timed out");
     }
-    throw new ScreenshotbaseError(
-      "provider_error",
-      error instanceof Error ? `screenshotbase request failed: ${error.message}` : "screenshotbase request failed",
+    throw new ProviderRequestError(
       502,
+      error instanceof Error ? `screenshotbase request failed: ${error.message}` : "screenshotbase request failed",
     );
   } finally {
     timeoutHandle.cleanup();
@@ -179,25 +177,25 @@ async function readScreenshotbasePayload(response: Response) {
 function createScreenshotbaseError(status: number, payload: unknown, phase: ScreenshotbaseRequestPhase) {
   const message = extractErrorMessage(payload) ?? `screenshotbase request failed with ${status}`;
   if (status === 429) {
-    return new ScreenshotbaseError("rate_limited", message, 429);
+    return new ProviderRequestError(429, message);
   }
   if (phase === "validate" && (status === 401 || status === 403)) {
-    return new ScreenshotbaseError("invalid_input", message, 400);
+    return new ProviderRequestError(400, message);
   }
   if (phase === "execute" && (status === 401 || status === 403)) {
-    return new ScreenshotbaseError("credential_expired", message, 409);
+    return new ProviderRequestError(401, message);
   }
   if (status === 400 || status === 422) {
-    return new ScreenshotbaseError("invalid_input", message, 400);
+    return new ProviderRequestError(400, message);
   }
   if (status === 408) {
-    return new ScreenshotbaseError("provider_error", message, 504);
+    return new ProviderRequestError(504, message);
   }
-  return new ScreenshotbaseError("provider_error", message, status >= 500 ? 502 : status);
+  return new ProviderRequestError(status >= 500 ? 502 : status, message);
 }
 
 function normalizeQuotaBucket(value: unknown, fieldName: string) {
-  const bucket = requireObject(value, fieldName);
+  const bucket = requiredResponseRecord(value, fieldName);
   return {
     total: requireInteger(bucket.total, `${fieldName}.total`),
     used: requireInteger(bucket.used, `${fieldName}.used`),
@@ -205,17 +203,9 @@ function normalizeQuotaBucket(value: unknown, fieldName: string) {
   };
 }
 
-function requireObject(value: unknown, fieldName: string) {
-  const object = optionalRecord(value);
-  if (!object) {
-    throw new ScreenshotbaseError("provider_error", `${fieldName} must be an object`, 502);
-  }
-  return object;
-}
-
 function requireInteger(value: unknown, fieldName: string) {
   if (!Number.isInteger(value)) {
-    throw new ScreenshotbaseError("provider_error", `${fieldName} must be an integer`, 502);
+    throw new ProviderRequestError(502, `${fieldName} must be an integer`);
   }
   return value as number;
 }

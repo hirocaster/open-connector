@@ -67,7 +67,6 @@ interface HithinkFinanceProxyInput {
 }
 export const hithinkFinanceProxyMaxResponseBytes: number = 4 * 1024 * 1024;
 const hithinkFinanceActionMaxResponseBytes = 16 * 1024 * 1024;
-const hithinkFinanceRequestTimeoutMs = 30_000;
 
 export const hithinkFinanceApiBaseUrl = "https://fuyao.aicubes.cn";
 
@@ -610,7 +609,7 @@ async function hithinkFinanceGet(
     url.searchParams.set(key, String(value));
   }
 
-  const timeout = createProviderTimeout(signal, hithinkFinanceRequestTimeoutMs);
+  const timeout = createProviderTimeout(signal);
   let response: Response;
   try {
     const upstreamResponse = await fetcher(url, {
@@ -722,7 +721,11 @@ function buildProviderError(
     );
   }
   if (code === 4001 || status === 429) {
-    return hithinkError("rate_limited", detail, 429);
+    return hithinkError(
+      "rate_limited",
+      `${detail}. Reduce request frequency and concurrency, then retry with exponential backoff (up to 3 attempts)`,
+      429,
+    );
   }
   if (code === 4040) {
     return hithinkError(

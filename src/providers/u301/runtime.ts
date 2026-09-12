@@ -2,17 +2,11 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
-import {
-  createProviderTimeout,
-  isAbortLikeError,
-  ProviderRequestError,
-  providerUserAgent,
-} from "../provider-runtime.ts";
+import { ProviderRequestError, providerUserAgent, runProviderRequest } from "../provider-runtime.ts";
 
-const u301ApiBaseUrl = "https://api.u301.com";
+export const u301ApiBaseUrl = "https://api.u301.com";
 const u301DomainsPath = "/v3/shorten/domains";
 const u301ShortenBulkPath = "/v3/shorten/bulk";
-const u301TimeoutMs = 30_000;
 
 type U301RequestPhase = "validate" | "execute";
 type U301ActionHandler = (input: Record<string, unknown>, context: U301ActionContext) => Promise<unknown>;
@@ -132,8 +126,7 @@ async function u301Request(input: U301RequestInput): Promise<unknown> {
     url.searchParams.set("workspaceId", input.workspaceId);
   }
 
-  const timeout = createProviderTimeout(input.signal, u301TimeoutMs);
-  try {
+  return runProviderRequest({ signal: input.signal, label: "U301" }, async (signal) => {
     const response = await input.fetcher(url, {
       method: input.method,
       headers: compactObject({
@@ -143,27 +136,14 @@ async function u301Request(input: U301RequestInput): Promise<unknown> {
         "content-type": input.body === undefined ? undefined : "application/json",
       }) as HeadersInit,
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readResponsePayload(response);
     if (!response.ok) {
       throw createU301Error(response, payload, input.phase);
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "U301 request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `U301 request failed: ${error.message}` : "U301 request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 async function readResponsePayload(response: Response): Promise<unknown> {

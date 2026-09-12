@@ -19,7 +19,6 @@ import {
 } from "../provider-runtime.ts";
 
 export const wangdianApiBaseUrl = "https://api.wangdian.cn/openapi2";
-const requestTimeoutMs = 30_000;
 const maximumWindowMs = 30 * 24 * 60 * 60 * 1_000;
 const maximumOrderWindowMs = 60 * 60 * 1_000;
 const chinaTimeOffsetMs = 8 * 60 * 60 * 1_000;
@@ -50,15 +49,6 @@ export interface WangdianContext {
   credential: WangdianCredential;
   fetcher: ProviderFetch;
   signal?: AbortSignal;
-}
-
-class WangdianRequestError extends ProviderRequestError {
-  readonly code: string;
-
-  constructor(code: string, message: string, status: number, details?: unknown) {
-    super(status, message, details);
-    this.code = code;
-  }
 }
 
 const actionConfigByName: ProviderActionSources<"wangdian", WangdianActionConfig> = {
@@ -175,16 +165,6 @@ export function readWangdianProxyParameters(body: unknown): Record<string, unkno
 }
 
 export function toWangdianExecutionError(error: unknown): ExecutionResult {
-  if (error instanceof WangdianRequestError) {
-    return {
-      ok: false,
-      error: {
-        code: error.code,
-        message: error.message,
-        details: { status: error.status, details: error.details },
-      },
-    };
-  }
   return toProviderExecutionError(error, "Wangdian request failed");
 }
 
@@ -434,7 +414,7 @@ function normalizeParameters(parameters: Record<string, unknown>): Record<string
 }
 
 async function requestWangdian(input: WangdianRequest): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(`${wangdianApiBaseUrl}/${input.endpoint}`, {
       method: "POST",
@@ -480,14 +460,14 @@ async function readWangdianPayload(response: Response): Promise<unknown> {
   }
 }
 
-function createWangdianError(status: number, payload: unknown, phase: WangdianRequestPhase): WangdianRequestError {
+function createWangdianError(status: number, payload: unknown, phase: WangdianRequestPhase): ProviderRequestError {
   const root = optionalRecord(payload);
   const code = parseOptionalInteger(root?.code);
   const message = optionalString(root?.message) ?? `Wangdian request failed with status ${status}`;
   const lowerMessage = message.toLowerCase();
   if (status === 429) return wangdianError("rate_limited", message, 429, payload);
   if (message.includes("权限不足") || message.includes("无仓库访问权限")) {
-    return wangdianError("scope_missing", message, 403, payload);
+    return wangdianError("authorization_failed", message, 403, payload);
   }
   if (
     status === 401 ||
@@ -505,9 +485,9 @@ function createWangdianError(status: number, payload: unknown, phase: WangdianRe
     lowerMessage.includes("sign is")
   ) {
     return wangdianError(
-      phase === "validate" ? "invalid_input" : "credential_expired",
+      phase === "validate" ? "invalid_input" : "authorization_failed",
       message,
-      phase === "validate" ? 400 : 409,
+      phase === "validate" ? 400 : 401,
       payload,
     );
   }
@@ -517,8 +497,8 @@ function createWangdianError(status: number, payload: unknown, phase: WangdianRe
   return wangdianError("provider_error", message, 502, payload);
 }
 
-function wangdianError(code: string, message: string, status: number, details?: unknown): WangdianRequestError {
-  return new WangdianRequestError(code, message, status, details);
+function wangdianError(code: string, message: string, status: number, details?: unknown): ProviderRequestError {
+  return new ProviderRequestError(status, message, details, code);
 }
 
 function parseOptionalInteger(value: unknown): number | undefined {

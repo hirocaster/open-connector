@@ -19,12 +19,12 @@ import {
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
   requireCustomCredential,
+  requiredInputString,
   toProviderProxyError,
 } from "../provider-runtime.ts";
 
 const service = "stack_ai";
 const stackAiInferenceBaseUrl = "https://stack-inference.com";
-const stackAiRequestTimeoutMs = 30_000;
 
 const stackAiFetch = createProviderFetch({ skipDnsValidation: true });
 
@@ -146,7 +146,7 @@ async function runStackAiFlow(input: Record<string, unknown>, context: StackAiCo
       path: buildRunPath(context.organizationId, context.flowId),
       phase: "execute",
       body: {
-        user_id: requireInputField(input.userId, "userId"),
+        user_id: requiredInputString(input.userId, "userId"),
         variables: optionalRecord(input.variables) ?? {},
       },
     },
@@ -157,7 +157,7 @@ async function runStackAiFlow(input: Record<string, unknown>, context: StackAiCo
 }
 
 async function getStackAiRunMetadata(input: Record<string, unknown>, context: StackAiContext): Promise<unknown> {
-  const runId = requireInputField(input.runId, "runId");
+  const runId = requiredInputString(input.runId, "runId");
   const responsePayload = await stackAiJsonRequest(
     {
       method: "GET",
@@ -183,7 +183,7 @@ async function stackAiJsonRequest(
   },
   context: StackAiContext,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, stackAiRequestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const url = new URL(input.path, stackAiInferenceBaseUrl);
     for (const [key, value] of Object.entries(input.query ?? {})) {
@@ -315,14 +315,6 @@ function requireTextField(value: string | undefined, key: string): string {
     throw new ProviderRequestError(400, `${key} is required.`);
   }
   return normalized;
-}
-
-function requireInputField(value: unknown, key: string): string {
-  const text = optionalString(value);
-  if (!text) {
-    throw new ProviderRequestError(400, `${key} is required.`);
-  }
-  return text;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | null {

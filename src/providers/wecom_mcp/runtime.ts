@@ -90,15 +90,6 @@ class InMemoryWeComMcpRateLimiter implements WeComMcpRateLimiter {
 
 const wecomMcpRateLimiter = createWeComMcpRateLimiter();
 
-class WeComRequestError extends ProviderRequestError {
-  readonly code: string;
-
-  constructor(code: string, status: number, message: string, details?: unknown) {
-    super(status, message, details);
-    this.code = code;
-  }
-}
-
 export const wecomActionHandlers: ProviderActionHandlers<"wecom_mcp", ProviderRuntimeHandler<WeComContext>> = {
   list_tools(_input, context) {
     return listWeComTools(context);
@@ -373,12 +364,7 @@ async function runWeComMcp<T>(phase: WeComRequestPhase, run: () => Promise<T>): 
     return await run();
   } catch (error) {
     if (error instanceof ProviderRequestError && error.status === 401) {
-      throw new WeComRequestError(
-        phase === "validate" ? "invalid_input" : "credential_expired",
-        phase === "validate" ? 400 : 401,
-        "WeCom MCP URL is invalid or expired",
-        error,
-      );
+      throw new ProviderRequestError(phase === "validate" ? 400 : 401, "WeCom MCP URL is invalid or expired", error);
     }
     throw error;
   }
@@ -393,16 +379,6 @@ function hashWeComRateLimitKey(credential: WeComCredential): string {
 }
 
 export function toWeComExecutionError(error: unknown): ExecutionResult {
-  if (error instanceof WeComRequestError) {
-    return {
-      ok: false,
-      error: {
-        code: error.code,
-        message: error.message,
-        details: { status: error.status, details: error.details },
-      },
-    };
-  }
   return toProviderExecutionError(error, "WeCom MCP request failed");
 }
 

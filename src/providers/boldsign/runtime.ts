@@ -7,7 +7,12 @@ import {
   optionalBoolean,
   requiredString,
 } from "../../core/cast.ts";
-import { ProviderRequestError, createProviderTimeout, providerUserAgent } from "../provider-runtime.ts";
+import {
+  providerInputError,
+  ProviderRequestError,
+  createProviderTimeout,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 export type BoldSignRegion = "us" | "eu" | "ca" | "au";
 
@@ -28,7 +33,6 @@ interface BoldSignRequestInput extends BoldSignActionContext {
 
 type BoldSignActionHandler = (input: Record<string, unknown>, context: BoldSignActionContext) => Promise<unknown>;
 
-const boldSignRequestTimeoutMs = 30_000;
 const boldSignCreditsPath = "/v1/plan/apiCreditsCount";
 
 const boldSignApiBaseUrlByRegion: Record<BoldSignRegion, string> = {
@@ -145,10 +149,6 @@ export function buildBoldSignApiBaseUrl(region: BoldSignRegion): string {
   return boldSignApiBaseUrlByRegion[region];
 }
 
-export function resolveStoredBoldSignApiBaseUrl(providerMetadata: Record<string, unknown>): string {
-  return buildBoldSignApiBaseUrl(normalizeBoldSignRegion(providerMetadata.region));
-}
-
 export async function validateBoldSignCredential(
   input: { apiKey: string; values: Record<string, string> },
   fetcher: typeof fetch,
@@ -158,7 +158,7 @@ export async function validateBoldSignCredential(
   const apiBaseUrl = buildBoldSignApiBaseUrl(region);
   const payload = await requestBoldSignJson({
     apiBaseUrl,
-    apiKey: requiredString(input.apiKey, "apiKey", badInput),
+    apiKey: requiredString(input.apiKey, "apiKey", providerInputError),
     fetcher,
     signal,
     path: boldSignCreditsPath,
@@ -218,7 +218,7 @@ function buildSendFromTemplateBody(input: Record<string, unknown>) {
 }
 
 async function requestBoldSignJson(input: BoldSignRequestInput) {
-  const timeout = createProviderTimeout(input.signal, boldSignRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   try {
     const url = new URL(input.path, `${input.apiBaseUrl}/`);
     appendQuery(url, input.query);
@@ -508,8 +508,4 @@ function isAbortError(error: unknown) {
 
 function boldSignError(code: string, message: string, status: number): ProviderRequestError {
   return new ProviderRequestError(status, message, { code });
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

@@ -2,15 +2,14 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
 
-import { compactObject, optionalInteger, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   createProviderTimeout,
   isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
+  requiredInputString,
 } from "../provider-runtime.ts";
-
-const workableDefaultRequestTimeoutMs = 30_000;
 
 interface WorkableContext {
   apiKey: string;
@@ -54,7 +53,7 @@ export const workableActionHandlers: ProviderActionHandlers<"workable", Provider
   async get_job(input, context): Promise<unknown> {
     const job = await requestWorkableJson({
       ...context,
-      path: `/jobs/${encodeURIComponent(requiredProviderString(input.shortcode, "shortcode"))}`,
+      path: `/jobs/${encodeURIComponent(requiredInputString(input.shortcode, "shortcode"))}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
     });
@@ -84,7 +83,7 @@ export const workableActionHandlers: ProviderActionHandlers<"workable", Provider
   async get_candidate(input, context): Promise<unknown> {
     const payload = await requestWorkableJson({
       ...context,
-      path: `/candidates/${encodeURIComponent(requiredProviderString(input.id, "id"))}`,
+      path: `/candidates/${encodeURIComponent(requiredInputString(input.id, "id"))}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
     });
@@ -161,7 +160,7 @@ async function requestWorkableJson(input: WorkableRequestInput): Promise<Record<
 }
 
 async function rawWorkableRequest(input: WorkableRequestInput): Promise<Response> {
-  const timeout = createProviderTimeout(input.signal, workableDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.signal);
   const url = new URL(`${buildWorkableApiBaseUrl(input.subdomain)}${input.path}`);
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
@@ -262,10 +261,6 @@ function readArrayField(payload: Record<string, unknown>, fieldName: string): un
   const value = payload[fieldName];
   if (Array.isArray(value)) return value;
   throw new ProviderRequestError(502, `Workable response is missing ${fieldName}`);
-}
-
-function requiredProviderString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readIncludeFields(value: unknown): string | undefined {

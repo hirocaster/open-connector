@@ -1,14 +1,6 @@
 import { compactObject, optionalBoolean, optionalInteger, optionalString } from "../../core/cast.ts";
 import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
-const helpscoutRequestTimeoutMs = 30_000;
-
-class HelpscoutError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number, _cause?: unknown, details?: unknown) {
-    super(status, message, details);
-  }
-}
-
 interface HelpscoutActionContext {
   accessToken: string;
   fetcher: typeof fetch;
@@ -60,7 +52,7 @@ export const helpscoutActionHandlers: Record<string, HelpscoutActionHandler> = {
       ? payload
       : (embedded?.savedReplies ?? embedded?.["saved-replies"] ?? root?.savedReplies);
     if (!Array.isArray(savedReplies)) {
-      throw new HelpscoutError("provider_error", "Help Scout saved replies response is not an array", 502);
+      throw new ProviderRequestError(502, "Help Scout saved replies response is not an array");
     }
     return {
       savedReplies: savedReplies.map((item, index) => requireProviderObject(item, `Help Scout savedReplies[${index}]`)),
@@ -381,11 +373,7 @@ async function executeCollectionRequest(
   const embedded = readProviderObject(root._embedded);
   const collection = embedded?.[envelopeKey] ?? root[envelopeKey];
   if (!Array.isArray(collection)) {
-    throw new HelpscoutError(
-      "provider_error",
-      `Help Scout ${envelopeKey} response is missing _embedded.${envelopeKey}`,
-      502,
-    );
+    throw new ProviderRequestError(502, `Help Scout ${envelopeKey} response is missing _embedded.${envelopeKey}`);
   }
   return {
     [outputKey]: collection.map((item, index) => requireProviderObject(item, `Help Scout ${envelopeKey}[${index}]`)),
@@ -412,7 +400,7 @@ async function requestHelpscout(options: HelpscoutRequestOptions) {
     headers.set("content-type", "application/json");
   }
 
-  const timeoutHandle = createProviderTimeout(undefined, helpscoutRequestTimeoutMs);
+  const timeoutHandle = createProviderTimeout(undefined);
   try {
     const response = await options.fetcher(url, {
       method: options.method ?? "GET",
@@ -427,16 +415,15 @@ async function requestHelpscout(options: HelpscoutRequestOptions) {
     }
     return { response, payload };
   } catch (error) {
-    if (error instanceof HelpscoutError) {
+    if (error instanceof ProviderRequestError) {
       throw error;
     }
     if (timeoutHandle.didTimeout()) {
-      throw new HelpscoutError("provider_error", "Help Scout request timed out", 504);
+      throw new ProviderRequestError(504, "Help Scout request timed out");
     }
-    throw new HelpscoutError(
-      "provider_error",
-      error instanceof Error ? `Help Scout request failed: ${error.message}` : "Help Scout request failed",
+    throw new ProviderRequestError(
       502,
+      error instanceof Error ? `Help Scout request failed: ${error.message}` : "Help Scout request failed",
     );
   } finally {
     timeoutHandle.cleanup();
@@ -468,7 +455,7 @@ function createHelpscoutError(response: Response, payload: unknown, phase: "acco
         : response.status >= 400 && response.status < 500
           ? "invalid_input"
           : "provider_error";
-  return new HelpscoutError(errorCode, message, errorCode === "provider_error" ? 502 : response.status);
+  return new ProviderRequestError(errorCode === "provider_error" ? 502 : response.status, message);
 }
 
 function extractHelpscoutErrorMessage(payload: unknown) {
@@ -520,7 +507,7 @@ function readProviderObject(value: unknown) {
 function requireProviderObject(value: unknown, context: string) {
   const object = readProviderObject(value);
   if (!object) {
-    throw new HelpscoutError("provider_error", `${context} is not an object`, 502);
+    throw new ProviderRequestError(502, `${context} is not an object`);
   }
   return object;
 }
@@ -532,7 +519,7 @@ function readOptionalTrimmedString(value: unknown) {
 function requireNonEmptyString(value: unknown, fieldName: string) {
   const stringValue = readOptionalTrimmedString(value);
   if (!stringValue) {
-    throw new HelpscoutError("invalid_input", `${fieldName} is required`, 400);
+    throw new ProviderRequestError(400, `${fieldName} is required`);
   }
   return stringValue;
 }
@@ -540,14 +527,14 @@ function requireNonEmptyString(value: unknown, fieldName: string) {
 function requirePositiveInteger(value: unknown, fieldName: string) {
   const numberValue = optionalInteger(value);
   if (numberValue === undefined || numberValue <= 0) {
-    throw new HelpscoutError("invalid_input", `${fieldName} must be a positive integer`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a positive integer`);
   }
   return numberValue;
 }
 
 function requireBoolean(value: unknown, fieldName: string) {
   if (typeof value !== "boolean") {
-    throw new HelpscoutError("invalid_input", `${fieldName} must be a boolean`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a boolean`);
   }
   return value;
 }
@@ -558,12 +545,12 @@ function readOptionalCustomFields(value: unknown) {
 
 function requireCustomFields(value: unknown, fieldName: string) {
   if (!Array.isArray(value)) {
-    throw new HelpscoutError("invalid_input", `${fieldName} must be an array`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be an array`);
   }
   return value.map((item, index) => {
     const object = readProviderObject(item);
     if (!object) {
-      throw new HelpscoutError("invalid_input", `${fieldName}[${index}] must be an object`, 400);
+      throw new ProviderRequestError(400, `${fieldName}[${index}] must be an object`);
     }
     return {
       id: requirePositiveInteger(object.id, `${fieldName}[${index}].id`),
@@ -574,7 +561,7 @@ function requireCustomFields(value: unknown, fieldName: string) {
 
 function requirePositiveIntegerArray(value: unknown, fieldName: string) {
   if (!Array.isArray(value)) {
-    throw new HelpscoutError("invalid_input", `${fieldName} must be an integer array`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be an integer array`);
   }
   return value.map((item, index) => requirePositiveInteger(item, `${fieldName}[${index}]`));
 }
@@ -585,7 +572,7 @@ function readOptionalStringArray(value: unknown, fieldName: string) {
 
 function requireStringArray(value: unknown, fieldName: string) {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new HelpscoutError("invalid_input", `${fieldName} must be a string array`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a string array`);
   }
   return value.map((item) => item.trim());
 }
@@ -598,7 +585,7 @@ function joinStringArray(value: unknown) {
 function joinNumberArray(value: unknown) {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
-    throw new HelpscoutError("invalid_input", "inboxIds must be an integer array", 400);
+    throw new ProviderRequestError(400, "inboxIds must be an integer array");
   }
   return value.map((item) => requirePositiveInteger(item, "inboxIds")).join(",");
 }

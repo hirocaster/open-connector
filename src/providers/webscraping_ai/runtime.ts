@@ -9,10 +9,15 @@ import {
   optionalRecord,
   optionalString,
   requiredRecord,
-  requiredString,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl } from "../../core/request.ts";
-import { isAbortLikeError, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  isAbortLikeError,
+  providerInputError,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 type WebscrapingAiPhase = "validate" | "execute";
 type WebscrapingAiQueryValue = string | number | boolean | readonly string[] | undefined;
@@ -334,10 +339,6 @@ function extractWebscrapingAiErrorMessage(body: string): string | undefined {
   return trimmed;
 }
 
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, providerInputError);
-}
-
 function readStringArray(value: unknown, fieldName: string): string[] {
   if (!Array.isArray(value)) {
     throw new ProviderRequestError(400, `${fieldName} must be an array`);
@@ -349,8 +350,4 @@ function readStringArray(value: unknown, fieldName: string): string[] {
     }
     return text;
   });
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

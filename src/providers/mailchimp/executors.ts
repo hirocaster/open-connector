@@ -10,14 +10,7 @@ import type { ProviderRuntimeHandler } from "../provider-runtime.ts";
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import {
-  compactObject,
-  optionalBoolean,
-  optionalNumber,
-  optionalRecord,
-  optionalString,
-  requiredString,
-} from "../../core/cast.ts";
+import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   createProviderProxyUrl,
   defineProviderExecutors,
@@ -27,6 +20,7 @@ import {
   providerUserAgent,
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
+  requiredInputString,
   toProviderProxyError,
 } from "../provider-runtime.ts";
 
@@ -70,7 +64,7 @@ export const mailchimpActionHandlers: ProviderActionHandlers<
   async get_list(input, context) {
     const payload = await requestMailchimpJson({
       context,
-      path: `/lists/${encodeURIComponent(requireInputString(input.list_id, "list_id"))}`,
+      path: `/lists/${encodeURIComponent(requiredInputString(input.list_id, "list_id"))}`,
       mode: "execute",
     });
 
@@ -79,7 +73,7 @@ export const mailchimpActionHandlers: ProviderActionHandlers<
   list_members(input, context) {
     return requestMailchimpJson({
       context,
-      path: `/lists/${encodeURIComponent(requireInputString(input.list_id, "list_id"))}/members`,
+      path: `/lists/${encodeURIComponent(requiredInputString(input.list_id, "list_id"))}/members`,
       query: compactObject({
         count: optionalNumber(input.count),
         offset: optionalNumber(input.offset),
@@ -98,10 +92,10 @@ export const mailchimpActionHandlers: ProviderActionHandlers<
     return { member: payload };
   },
   async upsert_member(input, context) {
-    const emailAddress = requireInputString(input.email_address, "email_address");
+    const emailAddress = requiredInputString(input.email_address, "email_address");
     const payload = await requestMailchimpJson({
       context,
-      path: `/lists/${encodeURIComponent(requireInputString(input.list_id, "list_id"))}/members/${subscriberHash(
+      path: `/lists/${encodeURIComponent(requiredInputString(input.list_id, "list_id"))}/members/${subscriberHash(
         emailAddress,
       )}`,
       method: "PUT",
@@ -185,7 +179,7 @@ export const mailchimpActionHandlers: ProviderActionHandlers<
   list_merge_fields(input, context) {
     return requestMailchimpJson({
       context,
-      path: `/lists/${encodeURIComponent(requireInputString(input.list_id, "list_id"))}/merge-fields`,
+      path: `/lists/${encodeURIComponent(requiredInputString(input.list_id, "list_id"))}/merge-fields`,
       query: compactObject({
         count: optionalNumber(input.count),
         offset: optionalNumber(input.offset),
@@ -555,7 +549,7 @@ function readMailchimpIdentifier(value: unknown): string | undefined {
 }
 
 function memberPath(input: Record<string, unknown>): string {
-  const listId = requireInputString(input.list_id, "list_id");
+  const listId = requiredInputString(input.list_id, "list_id");
   const hash = resolveSubscriberHash(input);
   return `/lists/${encodeURIComponent(listId)}/members/${encodeURIComponent(hash)}`;
 }
@@ -576,8 +570,4 @@ function resolveSubscriberHash(input: Record<string, unknown>): string {
 
 function subscriberHash(emailAddress: string): string {
   return createHash("md5").update(emailAddress.trim().toLowerCase()).digest("hex");
-}
-
-function requireInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

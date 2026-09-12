@@ -14,12 +14,14 @@ import {
   optionalIntegerLike,
   optionalRecord,
   optionalString as asOptionalString,
+  recordOrEmpty,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import {
   createProviderFetch,
   defineProviderExecutors,
   defineProviderProxy,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
 } from "../provider-runtime.ts";
@@ -161,7 +163,7 @@ async function validateGitlabCredential(
   fetcher: typeof fetch,
 ): Promise<CredentialValidationResult> {
   const user = await gitlabRequestJson("/user", { accessToken, tokenType, apiBaseUrl, fetcher }, "validate");
-  const userObject = asGitlabObject(user);
+  const userObject = recordOrEmpty(user);
   const userId = readOptionalPrimitive(userObject.id);
   const username = asOptionalString(userObject.username);
   const name = asOptionalString(userObject.name);
@@ -206,21 +208,17 @@ export function normalizeGitlabApiBaseUrl(
   }
   const url = assertPublicHttpUrl(instanceUrl, {
     fieldName: "baseUrl",
-    createError: credentialError,
+    createError: providerInputError,
     allowPrivateNetwork,
   });
   if (url.username || url.password) {
-    throw credentialError("baseUrl must not include credentials");
+    throw providerInputError("baseUrl must not include credentials");
   }
   url.hash = "";
   url.search = "";
   const path = url.pathname.replace(/\/+$/u, "");
   url.pathname = path.endsWith("/api/v4") ? path : `${path}/api/v4`;
   return url.toString().replace(/\/$/u, "");
-}
-
-function credentialError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 async function listGitlabProjects(
@@ -652,10 +650,6 @@ function readOptionalPrimitive(value: unknown): string | undefined {
     return String(value);
   }
   return undefined;
-}
-
-function asGitlabObject(value: unknown): Record<string, unknown> {
-  return optionalRecord(value) ?? {};
 }
 
 function readPagination(headers: Headers): {

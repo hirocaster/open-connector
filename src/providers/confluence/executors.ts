@@ -145,14 +145,22 @@ async function validateConfluenceOAuthCredential(
   const resources = readAccessibleResources(resourcesPayload);
   const resource = pickPrimaryResource(resources);
   if (!resource) {
-    throw new ProviderRequestError(
-      400,
-      "Confluence authorization does not include an accessible Confluence Cloud site",
-    );
+    return {
+      profile: {
+        accountId: "confluence",
+        displayName: "Confluence Cloud",
+        grantedScopes: [],
+      },
+      grantedScopes: [],
+      metadata: {
+        resourceCount: resources.length,
+        validationEndpoint: "/oauth/token/accessible-resources",
+      },
+    };
   }
 
-  const cloudId = requiredString(resource.id, "cloudId", providerResponseError);
-  const siteUrl = requiredString(resource.url, "site URL", providerResponseError);
+  const cloudId = requiredString(resource.id, "cloudId", confluenceResponseError);
+  const siteUrl = requiredString(resource.url, "site URL", confluenceResponseError);
   const siteName = optionalString(resource.name) ?? siteUrl;
   const siteAvatarUrl = optionalString(resource.avatarUrl);
   const resourceScopes = optionalStringArray(resource.scopes) ?? [];
@@ -253,6 +261,11 @@ function readAccessibleResources(payload: unknown): ConfluenceAccessibleResource
     if (!resource) {
       throw new ProviderRequestError(502, "Confluence accessible resource must be an object");
     }
+    requiredString(resource.id, "accessible resource id", confluenceResponseError);
+    requiredString(resource.url, "accessible resource URL", confluenceResponseError);
+    if (!optionalStringArray(resource.scopes)) {
+      throw confluenceResponseError("accessible resource scopes must be an array of strings");
+    }
     return resource;
   });
 }
@@ -286,6 +299,6 @@ function extractAtlassianErrorMessage(payload: unknown): string | undefined {
   return optionalString(object?.message) ?? optionalString(object?.error_description) ?? optionalString(object?.error);
 }
 
-function providerResponseError(message: string): ProviderRequestError {
+function confluenceResponseError(message: string): ProviderRequestError {
   return new ProviderRequestError(502, `Confluence ${message}`);
 }

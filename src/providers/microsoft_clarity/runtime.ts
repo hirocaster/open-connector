@@ -2,8 +2,8 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch } from "../provider-runtime.ts";
 
-import { compactObject, objectArray, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
-import { providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, objectArray, optionalString, requiredRecord } from "../../core/cast.ts";
+import { providerUserAgent, ProviderRequestError, requiredInputString } from "../provider-runtime.ts";
 
 export const microsoftClarityApiBaseUrl = "https://www.clarity.ms";
 const microsoftClarityExportPath = "/export-data/api/v1/project-live-insights";
@@ -61,10 +61,6 @@ export async function validateMicrosoftClarityCredential(
       dailyRequestLimit: 10,
     },
   };
-}
-
-export function clearMicrosoftClarityValidationCache(): void {
-  validationCache.clear();
 }
 
 async function exportLiveInsights(
@@ -254,8 +250,4 @@ function safeRecord(value: unknown): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }

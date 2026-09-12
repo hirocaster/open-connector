@@ -6,7 +6,6 @@ import { optionalBoolean, optionalInteger, optionalRecord, optionalString, requi
 import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
 
 export const workizApiBaseUrl = "https://api.workiz.com/api/v1";
-const timeoutMs = 30_000;
 
 function setQuery(query: URLSearchParams, name: string, value: unknown) {
   if (value !== undefined) query.set(name, String(value));
@@ -55,7 +54,7 @@ export async function validateWorkizCredential(
   };
 }
 async function request(path: string, context: ApiKeyProviderContext, phase: "validate" | "execute") {
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(`${workizApiBaseUrl}/${encodeURIComponent(context.apiKey)}${path}`, {
       headers: { accept: "application/json", "user-agent": providerUserAgent },
@@ -81,9 +80,12 @@ async function request(path: string, context: ApiKeyProviderContext, phase: "val
   }
 }
 function records(payload: unknown) {
+  if (payload == null) return [];
   if (Array.isArray(payload)) return payload;
-  const data = optionalRecord(payload)?.data;
+  const body = optionalRecord(payload);
+  const data = body?.data;
   if (Array.isArray(data)) return data;
+  if (body && data === undefined) return [];
   throw new ProviderRequestError(502, "workiz response did not include a record list");
 }
 function unwrapData(value: unknown) {

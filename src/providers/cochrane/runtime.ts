@@ -1,10 +1,12 @@
-import { Buffer } from "node:buffer";
 import { optionalRecord, optionalString } from "../../core/cast.ts";
-import { createProviderTimeout, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import {
+  basicAuthorizationHeader,
+  createProviderTimeout,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 
-const cochraneApiBaseUrl = "https://archie.cochrane.org";
-
-const requestTimeoutMs = 30_000;
+export const cochraneApiBaseUrl = "https://archie.cochrane.org";
 
 interface CochraneCredential {
   authMethod: "basic" | "bearer";
@@ -104,10 +106,7 @@ export function applyCochraneAuthorization(headers: Headers, values: Record<stri
     headers.set("authorization", `Bearer ${credential.bearerToken}`);
     return;
   }
-  headers.set(
-    "authorization",
-    `Basic ${Buffer.from(`${credential.username}:${credential.password}`).toString("base64")}`,
-  );
+  headers.set("authorization", basicAuthorizationHeader(`${credential.username}:${credential.password}`));
 }
 
 function readCochraneCredential(values: Record<string, string>): CochraneCredential {
@@ -141,7 +140,7 @@ async function requestCochraneJson(input: CochraneRequestInput) {
 }
 
 async function requestCochrane(input: CochraneRequestInput) {
-  const timeoutHandle = createProviderTimeout(undefined, requestTimeoutMs);
+  const timeoutHandle = createProviderTimeout(undefined);
   const headers = new Headers({
     accept: input.phase == "validate" ? "application/xml;charset=utf-8" : "application/json",
     "user-agent": providerUserAgent,

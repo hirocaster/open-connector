@@ -1,4 +1,9 @@
-import type { CredentialValidators, ProviderExecutors, TransitFileWriter } from "../../core/types.ts";
+import type {
+  CredentialValidators,
+  ProviderExecutors,
+  ProviderProxyExecutor,
+  TransitFileWriter,
+} from "../../core/types.ts";
 import type {
   ApiKeyProviderContext,
   ProviderActionHandlers,
@@ -10,7 +15,9 @@ import { base64Bytes, compactObject, optionalRecord, optionalString, requiredStr
 import { assertPublicHttpUrl, compactJson, readBoundedResponseBytes } from "../../core/request.ts";
 import {
   defineApiKeyProviderExecutors,
+  defineProviderProxy,
   mapProviderActionSources,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readTransitFileInput,
@@ -187,6 +194,13 @@ export const mistralAiActionHandlers: ProviderActionHandlers<"mistral_ai", Mistr
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, mistralAiActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: mistralApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     const response = await fetcher(`${mistralApiBaseUrl}/v1/models`, {
@@ -335,7 +349,7 @@ async function downloadMistralFile(input: Record<string, unknown>, context: ApiK
     throw new ProviderRequestError(400, "download_file requires local transit file storage.");
   }
 
-  const fileId = requiredString(input.file_id, "file_id", invalidInputError);
+  const fileId = requiredString(input.file_id, "file_id", providerInputError);
   const metadata = optionalRecord(
     await executeJsonMistralAction(
       { file_id: fileId },
@@ -381,7 +395,7 @@ function buildMistralUrl(
   const remainingInput = { ...input };
   let path = spec.path;
   for (const key of spec.pathKeys ?? []) {
-    const value = requiredString(remainingInput[key], key, invalidInputError);
+    const value = requiredString(remainingInput[key], key, providerInputError);
     path = path.replace(`{${key}}`, encodeURIComponent(value));
     delete remainingInput[key];
   }
@@ -457,7 +471,7 @@ async function resolveUploadSource(
     return readTransitUploadSource(file, context.transitFiles);
   }
 
-  const fileName = requiredString(file.name, "file.name", invalidInputError);
+  const fileName = requiredString(file.name, "file.name", providerInputError);
   const mimeType = optionalString(file.mimeType) ?? optionalString(file.mimetype);
   const fileUrl = optionalString(file.url);
   const contentBase64 = optionalString(file.content_base64);
@@ -470,7 +484,7 @@ async function resolveUploadSource(
   }
   if (contentBase64) {
     return {
-      bytes: base64Bytes(contentBase64, "file.content_base64", invalidInputError),
+      bytes: base64Bytes(contentBase64, "file.content_base64", providerInputError),
       fileName,
       mimeType: mimeType ?? "application/octet-stream",
     };
@@ -526,7 +540,7 @@ async function readRemoteUploadSource(
 function readPublicFileUrl(fileUrl: string, fieldName: string): URL {
   return assertPublicHttpUrl(fileUrl, {
     fieldName,
-    createError: invalidInputError,
+    createError: providerInputError,
   });
 }
 
@@ -626,8 +640,4 @@ async function readMistralError(response: Response): Promise<{ type: string; mes
       message: (await response.text().catch(() => "")) || `mistral_ai request failed with ${response.status}`,
     };
   }
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

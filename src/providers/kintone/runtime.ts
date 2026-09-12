@@ -12,17 +12,16 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 type KintonePhase = "validate" | "execute";
 type KintoneQueryValue = string | number | readonly (string | number)[];
 type KintoneActionHandler = ProviderRuntimeHandler<KintoneActionContext>;
 
-const kintoneRequestTimeoutMs = 30_000;
 const kintoneCredentialHelpUrl =
   "https://kintone.dev/en/docs/common/user-api/overview/user-api-overview/#api-token-authentication";
 
@@ -69,7 +68,7 @@ export const kintoneActionHandlers: ProviderActionHandlers<"kintone", KintoneAct
       context,
       path: "/v1/user/organizations.json",
       query: {
-        code: requiredString(input.code, "code", badInput),
+        code: requiredString(input.code, "code", providerInputError),
       },
       phase: "execute",
     });
@@ -82,7 +81,7 @@ export const kintoneActionHandlers: ProviderActionHandlers<"kintone", KintoneAct
       context,
       path: "/v1/user/groups.json",
       query: {
-        code: requiredString(input.code, "code", badInput),
+        code: requiredString(input.code, "code", providerInputError),
       },
       phase: "execute",
     });
@@ -112,7 +111,7 @@ export async function validateKintoneCredential(
   fetcher: typeof fetch,
   signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", badInput);
+  const apiKey = requiredString(input.apiKey, "apiKey", providerInputError);
   const subdomain = normalizeKintoneSubdomain(input.subdomain);
   const apiBaseUrl = buildKintoneApiBaseUrl(subdomain);
   const payload = await requestKintoneJson({
@@ -170,8 +169,7 @@ async function requestKintoneJson(input: {
   query?: Record<string, KintoneQueryValue | undefined>;
   phase: KintonePhase;
 }): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(input.context.signal, kintoneRequestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "Kintone" }, async (signal) => {
     const response = await input.context.fetcher(buildKintoneUrl(input.context.apiBaseUrl, input.path, input.query), {
       method: "GET",
       headers: {
@@ -179,7 +177,7 @@ async function requestKintoneJson(input: {
         authorization: `Bearer ${input.context.apiKey}`,
         "user-agent": providerUserAgent,
       },
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readKintonePayload(response);
     if (!response.ok) {
@@ -190,20 +188,7 @@ async function requestKintoneJson(input: {
       throw new ProviderRequestError(502, "Kintone returned an invalid payload");
     }
     return record;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Kintone request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Kintone request failed: ${error.message}` : "Kintone request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildKintoneUrl(
@@ -376,7 +361,7 @@ function readOptionalStringArray(value: unknown, fieldName: string): string[] | 
   if (!Array.isArray(value)) {
     throw new ProviderRequestError(400, `${fieldName} must be an array`);
   }
-  return value.map((item) => requiredString(item, fieldName, badInput));
+  return value.map((item) => requiredString(item, fieldName, providerInputError));
 }
 
 function readOptionalIntegerArray(value: unknown, fieldName: string): number[] | undefined {
@@ -425,8 +410,4 @@ function isValidKintoneSubdomain(subdomain: string): boolean {
 
 function buildTokenFingerprint(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

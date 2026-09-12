@@ -15,7 +15,9 @@ Keep the repository focused on open-source local execution:
 
 - Do not describe non-public products, non-public migration sources, unreleased SDK behavior, deployment operations, or organization-specific workflows in provider code, docs, examples, or skill text.
 - Do not expose compatibility fields, storage placeholders, or implementation details that have no clear public source and consumer.
-- Do not add provider-local generated schema modules such as `generated.ts` from OpenAPI/tool output. If the upstream surface is large, choose a small runnable subset and maintain schemas as source.
+- Do not paste OpenAPI or vendor tool output into the repository as provider action schemas. If the upstream surface is large, choose a small runnable subset and maintain schemas as source.
+- A provider-local action-schema module such as `generated.ts` is allowed only when it is hand-maintained as source and reviewed like the rest of the provider. `src/providers/gorgias/generated.ts` and `src/providers/postman/generated.ts` predate this rule and are grandfathered; a new module needs its own justification.
+- A new module must not carry vendor tool-description text verbatim: rewrite every action description in this project's voice. The action descriptions in `src/providers/postman/generated.ts` are still Postman's own tool text, which is known debt rather than a precedent to copy.
 - Do not copy third-party logos, screenshots, API specs, documentation excerpts, generated schemas, or brand assets unless the project has the right to distribute them.
 - Prefer official public URLs for `homepageUrl`, API documentation references in comments when truly needed, and credential help text.
 - If you use a reference implementation, treat it only as behavioral evidence. Re-express the provider in this repository's architecture and remove non-public assumptions before finishing.
@@ -40,6 +42,7 @@ Before writing code, pick the closest current provider and follow its current im
 - `src/providers/avoma` or `src/providers/attention`: API key provider with `executors.ts` as credential wiring and provider logic in `runtime.ts`.
 - `src/providers/github`: provider supporting both OAuth and API key through one bearer-token runtime context.
 - `src/providers/gmail`: OAuth-only provider with credential validation and resource-specific runtime helpers.
+- `src/providers/sunsama_mcp` or `src/providers/clickup_mcp`: remote MCP providers using a manually registered public OAuth client and PKCE.
 - `src/providers/benchmark_email`, `src/providers/clickhouse`, or `src/providers/dataforseo`: custom credentials or user-configured API base URLs.
 - `src/providers/baselinker`, `src/providers/iqair_airvisual`, or `src/providers/autotask`: provider proxy support and endpoint guards.
 - `src/providers/http-json-runtime.ts`: shared helper for simple JSON HTTP providers when the provider does not need a richer local protocol.
@@ -101,6 +104,10 @@ Map provider auth to this repository's public credential types:
 
 Open-source users bring their own credentials and OAuth applications. Provider code should validate and use those credentials through the shared runtime interfaces instead of assuming an external credential service.
 
+Dynamic client registration endpoints do not authorize the runtime to register OAuth clients automatically. Treat registration as developer setup: describe the registration request in `clientSetup`, let the developer register the runtime's displayed callback URL, and accept the returned `client_id` through the existing OAuth client configuration. For a public client, use `tokenEndpointAuthMethod: "none"`, enable PKCE when required, and tell the developer to leave Client Secret empty. See `src/providers/clickup_mcp/definition.ts` and `src/providers/sunsama_mcp/definition.ts`.
+
+Verify RFC 8707 resource indicators independently at the authorization and token endpoints. Discovery metadata saying resource indicators are supported does not prove the token request requires one. Use `authorizationParams` for an authorization URL parameter; do not extend the shared token flow unless a real code exchange shows the token endpoint needs additional fields.
+
 Add `credentialValidators` in `executors.ts` when the provider can cheaply verify credentials and return a useful `CredentialProfile`. Use a stable account id and readable display name when the provider exposes them.
 
 ## Executors
@@ -121,13 +128,23 @@ Create or update `executors.ts` with `ProviderExecutors`:
 
 Provider-local runtime files are appropriate when a provider has multiple API areas or a meaningful shared protocol. Do not add local mini-frameworks, schema facades, or action adapter layers just to reduce edit size.
 
+### Error Status Mapping
+
+`toProviderExecutionError` derives the execution error code from the status a `ProviderRequestError` carries, and both `/v1` routes derive the HTTP status from that code. Pick the status the runtime can express:
+
+- An execute-phase upstream 401 or 403 is `ProviderRequestError(401, ...)` or `ProviderRequestError(403, ...)`. The runtime answers `authorization_failed` / HTTP 403, which is what tells a client to reconnect the account. Never map it to 409: the runtime has no 409 case and reports it as `invalid_input` / HTTP 400.
+- A validate-phase 401 or 403 is `ProviderRequestError(400, ...)`, so the connect form shows a field error instead of a reconnect prompt.
+- A local refusal - an endpoint, category or origin the provider will not serve for a caller-supplied value - is `ProviderRequestError(400, ...)` too. Reserve `authorization_failed` for credential failures, because that is the code a client reads as "reconnect this account".
+- Everything else follows the two-tier convention: below 500 the error code is `invalid_input` unless the status is 401/403 (`authorization_failed`) or 429 (`rate_limited`); 500 and above are `provider_error` / HTTP 500. Do not reach for 410 - the runtime cannot express it and it reads as 400.
+- The HTTP status follows the code, with two exceptions the routes read out of `details.status`: a `details.status` of 413 is answered with HTTP 413 whatever the code, and a `details.status` of 404 is answered with HTTP 404 when the code is `invalid_input`. The status a provider raises always survives in `details.status` whatever the code turns out to be.
+- The optional fourth `code` argument overrides that inference. `insufficient_credit` / HTTP 402 is the one outcome no status produces on its own, so pass it explicitly there. Use that argument only for a code a provider owns (`providerErrorCodes` in `src/server/api/runtime-api.ts`); the other codes `mapExecutionErrorStatus` knows belong to the connection and dispatch layers and answer with a status that has nothing to do with the upstream. A code the routes do not know becomes HTTP 400 whatever status the error carries, which is strictly worse than passing no code at all.
+
 ## Historical Failure Modes
 
 Previous provider batches needed cleanup for these issues. Check them explicitly:
 
 - Do not add catalog-only placeholders or empty `executors`. Add a provider when it has a runnable local executor.
-- Do not commit generated action schema modules. Hand-maintained provider source should own action schemas.
-- Do commit the repository-wide generated `src/providers/action-contracts.generated.ts` when definition changes update it; it is not a provider-local generated schema module.
+- Do not commit machine-emitted action schema modules. Hand-maintained provider source should own action schemas, including a provider-local `generated.ts` when one is justified; see the Public Boundary rule above for the two grandfathered files and the vendor-description constraint.
 - If a credential field contains a user-configured base URL, host, workspace URL, or region-derived URL, normalize and validate it with the current public URL helper from `src/core/request.ts` before any fetch or proxy call. Reject credentials in URLs and unsafe network targets according to that helper.
 - If runtime downloads or uploads files, use existing transit-file and bounded-response helpers. Avoid unbounded `arrayBuffer()` or `text()` reads for file-sized responses.
 - If the upstream API supports streaming, multipart uploads, or very large local files but this runtime only supports JSON-friendly calls, expose the JSON-friendly shape and reject unsupported flags deliberately.
@@ -168,7 +185,7 @@ Before finishing, inspect the result against these checks:
 - No duplicate action-name union or cast exists solely to make a handler map appear exhaustive.
 - Generic helper code has a single owner.
 - Provider-local helper code has provider-specific meaning.
-- Generated registries, action contracts, and catalog files were updated by their commands, not hand-edited, and all changed generated files are included in the final diff.
+- Generated registries, action contracts, and catalog files were updated by their commands, not hand-edited.
 - No third-party rights issue was introduced.
 - No non-public product behavior is mentioned.
 

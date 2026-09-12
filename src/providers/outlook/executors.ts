@@ -1,12 +1,19 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { OAuthProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, requiredRecord } from "../../core/cast.ts";
-import { defineOAuthProviderExecutors, ProviderRequestError } from "../provider-runtime.ts";
+import { defineOAuthProviderExecutors, defineProviderProxy, ProviderRequestError } from "../provider-runtime.ts";
 
 const outlookGraphBaseUrl = "https://graph.microsoft.com/v1.0";
 const graphHost = "graph.microsoft.com";
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service: "outlook",
+  baseUrl: outlookGraphBaseUrl,
+  auth: { type: "oauth_bearer" },
+  skipDnsValidation: true,
+});
 
 type OutlookRuntimeDeps = OAuthProviderContext;
 
@@ -230,7 +237,11 @@ export async function assertOutlookResponse(response: Response): Promise<void> {
   const { code, message } = await extractOutlookError(response);
 
   if (response.status === 400) {
-    throw new ProviderRequestError(400, message);
+    const invalidInputMessage =
+      code === "InefficientFilter"
+        ? `${message} When filter and orderby are combined, include every orderby property in filter, in the same order and before other filter properties.`
+        : message;
+    throw new ProviderRequestError(400, invalidInputMessage);
   }
   if (response.status === 401) {
     throw new ProviderRequestError(401, message);

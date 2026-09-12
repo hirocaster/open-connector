@@ -10,21 +10,12 @@ interface AccountProfile {
 }
 import { mapSurveyMonkeyProviderScopes } from "./scopes.ts";
 
-class ConnectorError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number, cause?: unknown) {
-    super(status, message, cause);
-  }
-}
-
-const SurveyMonkeyError = ConnectorError;
-
 const surveyMonkeyApiBaseUrls = [
   "https://api.surveymonkey.com",
   "https://api.eu.surveymonkey.com",
   "https://api.surveymonkey.ca",
 ] as const;
 
-const surveyMonkeyDefaultRequestTimeoutMs = 30_000;
 const surveyMonkeyValidationPath = "/v3/users/me";
 
 type SurveyMonkeyRequestPhase = "validate" | "execute" | "trigger";
@@ -237,9 +228,9 @@ export const surveyMonkeyActionHandlers: Record<string, SurveyMonkeyActionHandle
   async create_contact(input, context) {
     const email = readOptionalString(input.email);
     const phoneNumber = readOptionalString(input.phoneNumber);
-    // schema 负责公开 action 输入校验；这里保留防御，避免直接调用 handler 时绕过业务约束。
+    // Keep this guard for direct handler calls that bypass the public action schema.
     if (!email && !phoneNumber) {
-      throw new ConnectorError("invalid_input", "at least one of email or phoneNumber is required", 400);
+      throw new ProviderRequestError(400, "at least one of email or phoneNumber is required");
     }
     const payload = await requestSurveyMonkeyJson({
       ...context,
@@ -259,7 +250,7 @@ export const surveyMonkeyActionHandlers: Record<string, SurveyMonkeyActionHandle
     if (Array.isArray(record.data)) {
       [contact] = record.data;
       if (!contact) {
-        throw new ConnectorError("provider_error", "SurveyMonkey contact response contains no contact", 502);
+        throw new ProviderRequestError(502, "SurveyMonkey contact response contains no contact");
       }
     }
     return {
@@ -273,7 +264,7 @@ export async function validateSurveyMonkeyCredential(
   fetcher: typeof fetch,
 ): Promise<CredentialValidationResult> {
   const accessToken = input.apiKey?.trim();
-  if (!accessToken) throw new SurveyMonkeyError("invalid_input", "apiKey is required", 400);
+  if (!accessToken) throw new ProviderRequestError(400, "apiKey is required");
   const apiBaseUrl = normalizeSurveyMonkeyApiBaseUrl(input.apiBaseUrl);
   const user = requireObject(
     await requestSurveyMonkeyJson({
@@ -295,26 +286,22 @@ export async function validateSurveyMonkeyCredential(
   };
 }
 
-function normalizeSurveyMonkeyApiBaseUrl(value: unknown) {
+export function normalizeSurveyMonkeyApiBaseUrl(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new ConnectorError("invalid_input", "SurveyMonkey apiBaseUrl is required", 400);
+    throw new ProviderRequestError(400, "SurveyMonkey apiBaseUrl is required");
   }
   let parsed: URL;
   try {
     parsed = new URL(value.trim());
   } catch {
-    throw new ConnectorError("invalid_input", "SurveyMonkey apiBaseUrl must be a valid URL", 400);
+    throw new ProviderRequestError(400, "SurveyMonkey apiBaseUrl must be a valid URL");
   }
   const normalized = parsed.origin;
   if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
-    throw new ConnectorError(
-      "invalid_input",
-      "SurveyMonkey apiBaseUrl must be an official API origin without a path",
-      400,
-    );
+    throw new ProviderRequestError(400, "SurveyMonkey apiBaseUrl must be an official API origin without a path");
   }
   if (!(surveyMonkeyApiBaseUrls as readonly string[]).includes(normalized)) {
-    throw new ConnectorError("invalid_input", "SurveyMonkey apiBaseUrl must be the US, EU, or Canada API origin", 400);
+    throw new ProviderRequestError(400, "SurveyMonkey apiBaseUrl must be the US, EU, or Canada API origin");
   }
   return normalized;
 }
@@ -337,7 +324,7 @@ async function requestSurveyMonkeyJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(undefined, surveyMonkeyDefaultRequestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await input.fetcher(url, {
       method: input.method,
@@ -362,18 +349,18 @@ async function requestSurveyMonkeyJson(input: {
       return null;
     }
     if (payload === undefined) {
-      throw new ConnectorError("provider_error", "SurveyMonkey returned invalid JSON", 502);
+      throw new ProviderRequestError(502, "SurveyMonkey returned invalid JSON");
     }
     return payload;
   } catch (error) {
-    if (error instanceof ConnectorError) {
+    if (error instanceof ProviderRequestError) {
       throw error;
     }
     if (timeout.didTimeout()) {
-      throw new ConnectorError("provider_error", "SurveyMonkey request timed out", 504);
+      throw new ProviderRequestError(504, "SurveyMonkey request timed out");
     }
     const message = error instanceof Error ? error.message : String(error);
-    throw new ConnectorError("provider_error", `SurveyMonkey request failed: ${message}`, 502);
+    throw new ProviderRequestError(502, `SurveyMonkey request failed: ${message}`);
   } finally {
     timeout.cleanup();
   }
@@ -403,7 +390,7 @@ function listSurveyResponses(
 function normalizePaginatedResult(payload: unknown) {
   const record = requireObject(payload, "SurveyMonkey paginated response");
   if (!Array.isArray(record.data)) {
-    throw new ConnectorError("provider_error", "SurveyMonkey paginated response is missing data", 502);
+    throw new ProviderRequestError(502, "SurveyMonkey paginated response is missing data");
   }
   return {
     items: record.data.map((item) => requireObject(item, "SurveyMonkey list item")),
@@ -423,9 +410,9 @@ function normalizeSurveyRollups(payload: unknown) {
   } else {
     const dataRecord = optionalRecord(data);
     if (!dataRecord) {
-      throw new ConnectorError("provider_error", "SurveyMonkey rollups response is missing data", 502);
+      throw new ProviderRequestError(502, "SurveyMonkey rollups response is missing data");
     }
-    // 兼容以 question id 为键、rollup 对象为值的响应形态。
+    // Support responses keyed by question ID with rollup objects as values.
     items = "id" in dataRecord || "summary" in dataRecord ? [dataRecord] : Object.values(dataRecord);
   }
   const rollups = items.map((item) => {
@@ -435,11 +422,7 @@ function normalizeSurveyRollups(payload: unknown) {
     }
     const summary = optionalRecord(rollup.summary);
     if (!summary) {
-      throw new ConnectorError(
-        "provider_error",
-        "SurveyMonkey question rollup summary must be an object or array",
-        502,
-      );
+      throw new ProviderRequestError(502, "SurveyMonkey question rollup summary must be an object or array");
     }
     return { ...rollup, summary: [summary] };
   });
@@ -451,7 +434,7 @@ function normalizeCreatedContactList(payload: unknown) {
   if (Array.isArray(record.data)) {
     const [contactList] = record.data;
     if (!contactList) {
-      throw new ConnectorError("provider_error", "SurveyMonkey contact list response contains no contact list", 502);
+      throw new ProviderRequestError(502, "SurveyMonkey contact list response contains no contact list");
     }
     return requireObject(contactList, "SurveyMonkey contact list");
   }
@@ -461,10 +444,10 @@ function normalizeCreatedContactList(payload: unknown) {
 function readGrantedProviderScopes(user: Record<string, unknown>) {
   const scopes = optionalRecord(user.scopes);
   if (!scopes || !Array.isArray(scopes.granted)) {
-    throw new ConnectorError("provider_error", "SurveyMonkey user response is missing scopes.granted", 502);
+    throw new ProviderRequestError(502, "SurveyMonkey user response is missing scopes.granted");
   }
   if (scopes.granted.some((scope) => typeof scope !== "string" || !scope.trim())) {
-    throw new ConnectorError("provider_error", "SurveyMonkey user response contains invalid scopes.granted", 502);
+    throw new ProviderRequestError(502, "SurveyMonkey user response contains invalid scopes.granted");
   }
   return scopes.granted.map((scope) => (scope as string).trim());
 }
@@ -496,7 +479,7 @@ function paginationQuery(input: Record<string, unknown>) {
 
 function readRequiredString(value: unknown, fieldName: string) {
   if (typeof value !== "string" || !value.trim()) {
-    throw new ConnectorError("invalid_input", `${fieldName} is required`, 400);
+    throw new ProviderRequestError(400, `${fieldName} is required`);
   }
   return value.trim();
 }
@@ -508,7 +491,7 @@ function readOptionalString(value: unknown) {
 function readOptionalPositiveInteger(value: unknown, fieldName: string) {
   if (value === undefined) return undefined;
   if (!Number.isInteger(value) || (value as number) <= 0) {
-    throw new ConnectorError("invalid_input", `${fieldName} must be a positive integer`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a positive integer`);
   }
   return value as number;
 }
@@ -516,7 +499,7 @@ function readOptionalPositiveInteger(value: unknown, fieldName: string) {
 function readOptionalBoolean(value: unknown, fieldName: string) {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") {
-    throw new ConnectorError("invalid_input", `${fieldName} must be a boolean`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a boolean`);
   }
   return value;
 }
@@ -525,7 +508,7 @@ function readOptionalStringRecord(value: unknown, fieldName: string) {
   if (value === undefined) return undefined;
   const record = optionalRecord(value);
   if (!record || Object.values(record).some((item) => typeof item !== "string")) {
-    throw new ConnectorError("invalid_input", `${fieldName} must contain only string values`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must contain only string values`);
   }
   return record as Record<string, string>;
 }
@@ -533,7 +516,7 @@ function readOptionalStringRecord(value: unknown, fieldName: string) {
 function readOptionalStringArray(value: unknown, fieldName: string) {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length === 0 || value.some((item) => typeof item !== "string" || !item.trim())) {
-    throw new ConnectorError("invalid_input", `${fieldName} must be a non-empty array of non-empty strings`, 400);
+    throw new ProviderRequestError(400, `${fieldName} must be a non-empty array of non-empty strings`);
   }
   return value.map((item) => item.trim());
 }
@@ -542,7 +525,7 @@ function requireObject(value: unknown, fieldName: string) {
   try {
     return requiredRecord(value, fieldName);
   } catch {
-    throw new ConnectorError("provider_error", `${fieldName} must be an object`, 502);
+    throw new ProviderRequestError(502, `${fieldName} must be an object`);
   }
 }
 
@@ -559,28 +542,24 @@ function mapSurveyMonkeyError(status: number, payload: unknown, phase: SurveyMon
   const message = extractSurveyMonkeyErrorMessage(payload) ?? `SurveyMonkey request failed with status ${status}`;
   const errorId = extractSurveyMonkeyErrorId(payload);
   if (status === 429) {
-    return new ConnectorError("rate_limited", message, 429);
+    return new ProviderRequestError(429, message);
   }
   if (status === 401) {
-    return new ConnectorError(
-      phase === "validate" ? "invalid_input" : "credential_expired",
-      message,
-      phase === "validate" ? 400 : 401,
-    );
+    return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
   }
   if (status === 403) {
     if (phase === "validate") {
-      return new ConnectorError("invalid_input", message, 400);
+      return new ProviderRequestError(400, message);
     }
-    if (errorId === "1014") return new ConnectorError("scope_missing", message, 403);
-    if (errorId === "1017") return new ConnectorError("rate_limited", message, 429);
-    if (errorId === "1018") return new ConnectorError("provider_error", message, 502);
-    return new ConnectorError("policy_denied", message, 403);
+    if (errorId === "1014") return new ProviderRequestError(403, message);
+    if (errorId === "1017") return new ProviderRequestError(429, message);
+    if (errorId === "1018") return new ProviderRequestError(502, message);
+    return new ProviderRequestError(403, message);
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ConnectorError("invalid_input", message, status === 422 ? 400 : status);
+    return new ProviderRequestError(status === 422 ? 400 : status, message);
   }
-  return new ConnectorError("provider_error", message, status >= 500 ? 502 : status);
+  return new ProviderRequestError(status >= 500 ? 502 : status, message);
 }
 
 function extractSurveyMonkeyErrorId(payload: unknown) {
@@ -599,11 +578,7 @@ function isSurveyMonkeyRevokedAccessPayload(payload: unknown) {
 
 function mapSurveyMonkeyRevokedAccessError(payload: unknown, phase: SurveyMonkeyRequestPhase) {
   const message = extractSurveyMonkeyErrorMessage(payload) ?? "SurveyMonkey access was revoked";
-  return new ConnectorError(
-    phase === "validate" ? "invalid_input" : "credential_expired",
-    message,
-    phase === "validate" ? 400 : 401,
-  );
+  return new ProviderRequestError(phase === "validate" ? 400 : 401, message);
 }
 
 function extractSurveyMonkeyErrorMessage(payload: unknown) {

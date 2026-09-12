@@ -5,17 +5,15 @@ import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 import { optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { queryParams } from "../../core/request.ts";
 import {
-  createProviderTimeout,
   defineApiKeyProviderExecutors,
   defineProviderProxy,
-  isAbortLikeError,
   ProviderRequestError,
   providerUserAgent,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 const service = "coinmarketcal";
 const coinmarketcalApiBaseUrl = "https://developers.coinmarketcal.com/v1";
-const requestTimeoutMs = 30_000;
 
 type CoinmarketcalActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
 
@@ -98,12 +96,11 @@ async function requestCoinmarketcalJson(
   context: ApiKeyProviderContext,
   mode: "validate" | "execute",
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: context.signal, label: "coinmarketcal" }, async (signal) => {
     const response = await context.fetcher(buildCoinmarketcalUrl(path, query), {
       method: "GET",
       headers: coinmarketcalHeaders(context.apiKey),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readCoinmarketcalPayload(response);
     if (!response.ok) {
@@ -113,20 +110,7 @@ async function requestCoinmarketcalJson(
       throw new ProviderRequestError(502, "coinmarketcal returned invalid JSON");
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "coinmarketcal request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `coinmarketcal request failed: ${error.message}` : "coinmarketcal request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildCoinmarketcalUrl(path: string, query: Record<string, string>): string {

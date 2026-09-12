@@ -5,13 +5,6 @@ import { compactObject, optionalRecord, optionalString } from "../../core/cast.t
 import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
 
 export const formstackApiBaseUrl = "https://www.formstack.com/api/v2025";
-const requestTimeoutMs = 30_000;
-
-class FormstackError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number, _cause?: unknown, details?: unknown) {
-    super(status, message, details);
-  }
-}
 
 export type FormstackRequestPhase = "validate" | "execute" | "trigger";
 
@@ -234,7 +227,7 @@ async function requestFormstack(options: {
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
-  const timeout = createProviderTimeout(undefined, requestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await options.fetcher(url, {
       method: options.method,
@@ -257,14 +250,13 @@ async function requestFormstack(options: {
   } catch (error) {
     if (error instanceof ProviderRequestError) throw error;
     if (timeout.didTimeout() || (error instanceof DOMException && error.name === "AbortError")) {
-      throw new FormstackError("provider_error", `Formstack ${options.operation} request timed out.`, 504);
+      throw new ProviderRequestError(504, `Formstack ${options.operation} request timed out.`);
     }
-    throw new FormstackError(
-      "provider_error",
+    throw new ProviderRequestError(
+      502,
       error instanceof Error
         ? `Formstack ${options.operation} request failed: ${error.message}`
         : `Formstack ${options.operation} request failed.`,
-      502,
     );
   } finally {
     timeout.cleanup();
@@ -273,34 +265,22 @@ async function requestFormstack(options: {
 
 function requireApiKey(value: unknown) {
   const apiKey = optionalString(value)?.trim();
-  if (!apiKey) throw new FormstackError("invalid_input", "apiKey is required", 400);
+  if (!apiKey) throw new ProviderRequestError(400, "apiKey is required");
   return apiKey;
 }
 
 function mapFormstackError(status: number, payload: unknown, phase: FormstackRequestPhase, operation: string) {
   const message = extractError(payload) ?? `Formstack ${operation} failed with HTTP ${status}.`;
   if (status === 401) {
-    return new FormstackError(
-      phase === "validate" ? "invalid_input" : "credential_expired",
-      message,
-      phase === "validate" ? 400 : 401,
-      undefined,
-      payload,
-    );
+    return new ProviderRequestError(phase === "validate" ? 400 : 401, message, payload);
   }
   if (status === 403) {
-    return new FormstackError(
-      phase === "validate" ? "invalid_input" : "scope_missing",
-      message,
-      phase === "validate" ? 400 : 403,
-      undefined,
-      payload,
-    );
+    return new ProviderRequestError(phase === "validate" ? 400 : 403, message, payload);
   }
   if (status === 429) {
-    return new FormstackError("rate_limited", message, 429, undefined, payload);
+    return new ProviderRequestError(429, message, payload);
   }
-  return new FormstackError("provider_error", message, status, undefined, payload);
+  return new ProviderRequestError(status, message, payload);
 }
 
 function appendSearchCriteria(query: Record<string, string | number | undefined>, value: unknown) {
@@ -332,14 +312,14 @@ function optionalNumber(value: unknown) {
 
 function requiredPositiveInteger(value: unknown, field: string) {
   if (!Number.isInteger(value) || (value as number) <= 0) {
-    throw new FormstackError("invalid_input", `${field} must be a positive integer`, 400);
+    throw new ProviderRequestError(400, `${field} must be a positive integer`);
   }
   return value as number;
 }
 
 function requireArray(value: unknown, name: string): unknown[] {
   if (!Array.isArray(value)) {
-    throw new FormstackError("provider_error", `Formstack ${name} response must be an array.`, 502, undefined, value);
+    throw new ProviderRequestError(502, `Formstack ${name} response must be an array.`, value);
   }
   return value;
 }
@@ -351,7 +331,7 @@ function normalizeNullableArray(value: unknown, name: string): unknown[] {
 function requireObject(value: unknown, name: string): Record<string, unknown> {
   const object = optionalRecord(value);
   if (!object) {
-    throw new FormstackError("provider_error", `Formstack ${name} response must be an object.`, 502, undefined, value);
+    throw new ProviderRequestError(502, `Formstack ${name} response must be an object.`, value);
   }
   return object;
 }
@@ -361,7 +341,7 @@ function parseJson(text: string, operation: string): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new FormstackError("provider_error", `Formstack ${operation} returned invalid JSON.`, 502);
+    throw new ProviderRequestError(502, `Formstack ${operation} returned invalid JSON.`);
   }
 }
 

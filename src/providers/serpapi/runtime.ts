@@ -2,18 +2,16 @@ import type { CredentialValidationResult, ProviderExecutors } from "../../core/t
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext, ProviderFetch, ProviderRuntimeHandler } from "../provider-runtime.ts";
 
+import { compactObject, optionalNumber, optionalRecord, optionalString, requiredRecord } from "../../core/cast.ts";
 import {
-  compactObject,
-  optionalNumber,
-  optionalRecord,
-  optionalString,
-  requiredRecord,
-  requiredString,
-} from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+  defineApiKeyProviderExecutors,
+  providerUserAgent,
+  ProviderRequestError,
+  requiredInputString,
+} from "../provider-runtime.ts";
 
 const service = "serpapi";
-const serpapiBaseUrl = "https://serpapi.com";
+export const serpapiBaseUrl: string = "https://serpapi.com";
 
 type SerpapiPhase = "validate" | "execute";
 type SerpapiQueryValue = string | number | boolean | undefined;
@@ -25,7 +23,7 @@ export const serpapiActionHandlers: ProviderActionHandlers<"serpapi", SerpapiAct
       await requestSerpApiJson(
         compactObject({
           engine: "google",
-          q: readInputString(input.q, "q"),
+          q: requiredInputString(input.q, "q"),
           location: optionalString(input.location),
           hl: optionalString(input.hl),
           gl: optionalString(input.gl),
@@ -54,7 +52,7 @@ export const serpapiActionHandlers: ProviderActionHandlers<"serpapi", SerpapiAct
       await requestSerpApiJson(
         compactObject({
           engine: "google_news",
-          q: readInputString(input.q, "q"),
+          q: requiredInputString(input.q, "q"),
           hl: optionalString(input.hl),
           gl: optionalString(input.gl),
           start: optionalNumber(input.start),
@@ -79,7 +77,7 @@ export const serpapiActionHandlers: ProviderActionHandlers<"serpapi", SerpapiAct
       await requestSerpApiJson(
         compactObject({
           engine: "google_maps",
-          q: readInputString(input.q, "q"),
+          q: requiredInputString(input.q, "q"),
           ll: optionalString(input.ll),
           hl: optionalString(input.hl),
           gl: optionalString(input.gl),
@@ -210,10 +208,6 @@ function createSerpApiError(status: number, payload: unknown, phase: SerpapiPhas
 function extractSerpApiMessage(payload: unknown): string | undefined {
   const record = optionalRecord(payload);
   return optionalString(record?.error) ?? optionalString(record?.message);
-}
-
-function readInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function requirePayloadRecord(value: unknown): Record<string, unknown> {

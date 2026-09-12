@@ -16,9 +16,8 @@ import {
   ProviderRequestError,
 } from "../provider-runtime.ts";
 
-const theCatApiBaseUrl = "https://api.thecatapi.com/v1/";
+export const theCatApiBaseUrl = "https://api.thecatapi.com/v1/";
 const theCatApiValidationPath = "/breeds";
-const theCatApiDefaultTimeoutMs = 30_000;
 
 type TheCatApiRequestPhase = "validate" | "execute";
 type TheCatApiContext = Pick<ApiKeyProviderContext, "apiKey" | "fetcher" | "signal">;
@@ -66,7 +65,7 @@ export async function validateTheCatApiCredential(context: TheCatApiContext): Pr
     },
     grantedScopes: [],
     metadata: compactObject({
-      apiBaseUrl: "https://api.thecatapi.com/v1",
+      apiBaseUrl: theCatApiBaseUrl,
       validationEndpoint: theCatApiValidationPath,
       sampleBreedId: sampleBreed?.id,
       sampleBreedName: sampleBreed?.name,
@@ -164,7 +163,7 @@ async function requestTheCatApiJson(input: {
   context: Pick<ApiKeyProviderContext, "fetcher" | "signal">;
   phase: TheCatApiRequestPhase;
 }) {
-  const timeout = createProviderTimeout(input.context.signal, theCatApiDefaultTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   const url = buildTheCatApiUrl(input.path, input.query);
 
   try {

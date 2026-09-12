@@ -2,23 +2,23 @@ import type { CredentialValidationResult } from "../../core/types.ts";
 
 import { compactObject, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
-import { createProviderTimeout, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  createProviderTimeout,
+  isAbortSignalError,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 
 const defaultInstanceUrl = "https://invoicing.co";
 const apiPath = "/api/v1";
 const validationEndpoint = "/companies/current";
-
-class InvoiceNinjaError extends ProviderRequestError {
-  constructor(_code: string, message: string, status: number, _cause?: unknown, details?: unknown) {
-    super(status, message, details);
-  }
-}
 
 type RequestPhase = "validate" | "execute";
 interface InvoiceNinjaInput {
   apiKey: string;
   providerMetadata: Record<string, unknown>;
   input: Record<string, unknown>;
+  signal?: AbortSignal;
 }
 type Handler = (input: InvoiceNinjaInput, fetcher: typeof fetch) => Promise<unknown>;
 
@@ -93,7 +93,7 @@ export const invoiceNinjaActionHandlers: Record<string, Handler> = {
     const body = invoiceBody(input.input);
     const query = invoiceActionQuery(input.input);
     if (Object.keys(body).length === 0 && Object.keys(query).length === 0) {
-      throw new InvoiceNinjaError("invalid_input", "update_invoice requires a field or status action to update", 400);
+      throw new ProviderRequestError(400, "update_invoice requires a field or status action to update");
     }
     return {
       invoice: unwrapEntity(
@@ -141,9 +141,10 @@ export const invoiceNinjaActionHandlers: Record<string, Handler> = {
 export async function validateInvoiceNinjaCredential(
   input: Record<string, string>,
   fetcher: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<CredentialValidationResult> {
   const apiKey = input.apiKey?.trim();
-  if (!apiKey) throw new InvoiceNinjaError("invalid_input", "apiKey is required", 400);
+  if (!apiKey) throw new ProviderRequestError(400, "apiKey is required");
   const urls = normalizeInvoiceNinjaUrls(input.instanceUrl);
   const payload = await requestJson({
     apiBaseUrl: urls.apiBaseUrl,
@@ -152,6 +153,7 @@ export async function validateInvoiceNinjaCredential(
     method: "POST",
     phase: "validate",
     fetcher,
+    signal,
   });
   const company = unwrapEntity(payload, "company");
   const companyId = optionalString(company.id)?.trim();
@@ -179,26 +181,18 @@ export function normalizeInvoiceNinjaUrls(
   const raw = typeof value === "string" && value.trim() ? value.trim() : defaultInstanceUrl;
   const url = assertPublicHttpUrl(raw, {
     fieldName: "instanceUrl",
-    createError: (message) => new InvoiceNinjaError("invalid_input", message, 400),
+    createError: (message) => new ProviderRequestError(400, message),
     allowPrivateNetwork,
   });
   if (url.protocol !== "https:") {
-    throw new InvoiceNinjaError("invalid_input", "instanceUrl must use HTTPS", 400);
+    throw new ProviderRequestError(400, "instanceUrl must use HTTPS");
   }
   if (url.username || url.password || url.search || url.hash) {
-    throw new InvoiceNinjaError(
-      "invalid_input",
-      "instanceUrl must not contain credentials, query parameters, or a fragment",
-      400,
-    );
+    throw new ProviderRequestError(400, "instanceUrl must not contain credentials, query parameters, or a fragment");
   }
   const path = url.pathname.replace(/\/+$/, "") || "/";
   if (path !== "/" && path !== apiPath) {
-    throw new InvoiceNinjaError(
-      "invalid_input",
-      "instanceUrl must be the Invoice Ninja instance root or end with /api/v1",
-      400,
-    );
+    throw new ProviderRequestError(400, "instanceUrl must be the Invoice Ninja instance root or end with /api/v1");
   }
   const instanceUrl = url.origin;
   return { instanceUrl, apiBaseUrl: `${instanceUrl}${apiPath}` };
@@ -221,6 +215,7 @@ async function request(
     path,
     fetcher,
     phase: "execute",
+    signal: input.signal,
     ...options,
   });
 }
@@ -235,8 +230,9 @@ async function requestJson(input: {
   query?: Record<string, unknown>;
   body?: Record<string, unknown>;
   notFound?: boolean;
+  signal?: AbortSignal;
 }) {
-  const timeout = createProviderTimeout(undefined, 30_000);
+  const timeout = createProviderTimeout(input.signal);
   const url = new URL(`${input.apiBaseUrl}${input.path}`);
   for (const [key, value] of Object.entries(input.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
@@ -260,14 +256,13 @@ async function requestJson(input: {
     }
     return payload;
   } catch (error) {
-    if (error instanceof InvoiceNinjaError) throw error;
-    if (timeout.didTimeout() || (error instanceof Error && error.name === "AbortError")) {
-      throw new InvoiceNinjaError("provider_error", "Invoice Ninja request timed out", 504);
+    if (error instanceof ProviderRequestError) throw error;
+    if (timeout.didTimeout() || isAbortSignalError(timeout.signal, error)) {
+      throw new ProviderRequestError(504, "Invoice Ninja request timed out");
     }
-    throw new InvoiceNinjaError(
-      "provider_error",
-      error instanceof Error ? `Invoice Ninja request failed: ${error.message}` : "Invoice Ninja request failed",
+    throw new ProviderRequestError(
       502,
+      error instanceof Error ? `Invoice Ninja request failed: ${error.message}` : "Invoice Ninja request failed",
     );
   } finally {
     timeout.cleanup();
@@ -288,16 +283,14 @@ async function readPayload(response: Response) {
 function mapInvoiceNinjaError(status: number, payload: unknown, phase: RequestPhase, notFound?: boolean) {
   const message = errorMessage(payload) ?? `Invoice Ninja request failed with status ${status}`;
   if (status === 401 || status === 403) {
-    return phase === "validate"
-      ? new InvoiceNinjaError("invalid_input", message, 400)
-      : new InvoiceNinjaError("credential_expired", message, status);
+    return phase === "validate" ? new ProviderRequestError(400, message) : new ProviderRequestError(status, message);
   }
   if (status === 404 && (notFound || phase === "validate")) {
-    return new InvoiceNinjaError("invalid_input", message, 404);
+    return new ProviderRequestError(404, message);
   }
-  if (status === 422) return new InvoiceNinjaError("invalid_input", message, 422);
-  if (status === 429) return new InvoiceNinjaError("rate_limited", message, 429);
-  return new InvoiceNinjaError("provider_error", message, status >= 500 ? 502 : status);
+  if (status === 422) return new ProviderRequestError(422, message);
+  if (status === 429) return new ProviderRequestError(429, message);
+  return new ProviderRequestError(status >= 500 ? 502 : status, message);
 }
 
 function errorMessage(payload: unknown) {
@@ -324,14 +317,14 @@ function errorMessage(payload: unknown) {
 function storedApiBaseUrl(metadata?: Record<string, unknown>) {
   const stored = metadata?.apiBaseUrl ?? metadata?.instanceUrl;
   if (typeof stored !== "string" || !stored.trim()) {
-    throw new InvoiceNinjaError("provider_error", "Invoice Ninja credential metadata is missing the instance URL", 502);
+    throw new ProviderRequestError(502, "Invoice Ninja credential metadata is missing the instance URL");
   }
   return normalizeInvoiceNinjaUrls(stored).apiBaseUrl;
 }
 
 function encodeId(value: unknown, fieldName: string) {
   const id = optionalString(value)?.trim();
-  if (!id) throw new InvoiceNinjaError("invalid_input", `${fieldName} is required`, 400);
+  if (!id) throw new ProviderRequestError(400, `${fieldName} is required`);
   return encodeURIComponent(id);
 }
 
@@ -481,7 +474,7 @@ function paymentBody(input: Record<string, unknown>) {
 function unwrapEntity(payload: unknown, label: string) {
   const object = optionalRecord(payload);
   if (!object) {
-    throw new InvoiceNinjaError("provider_error", `Invoice Ninja response is missing ${label}`, 502);
+    throw new ProviderRequestError(502, `Invoice Ninja response is missing ${label}`);
   }
   const data = optionalRecord(object.data);
   return data ?? object;
@@ -490,11 +483,11 @@ function unwrapEntity(payload: unknown, label: string) {
 function normalizeList(payload: unknown, key: "clients" | "invoices" | "payments") {
   const object = optionalRecord(payload);
   if (!object || !Array.isArray(object.data)) {
-    throw new InvoiceNinjaError("provider_error", `Invoice Ninja response is missing ${key}`, 502);
+    throw new ProviderRequestError(502, `Invoice Ninja response is missing ${key}`);
   }
   const records = object.data;
   if (!records.every((record) => optionalRecord(record))) {
-    throw new InvoiceNinjaError("provider_error", `Invoice Ninja returned malformed ${key}`, 502);
+    throw new ProviderRequestError(502, `Invoice Ninja returned malformed ${key}`);
   }
   const meta = optionalRecord(object.meta);
   const pagination = optionalRecord(meta?.pagination);

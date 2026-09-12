@@ -14,16 +14,10 @@ import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed, queryFlag, queryPar
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
 } from "../provider-runtime.ts";
-
-const homeAssistantRequestTimeoutMs = 30_000;
-
-/** Input guard failures surface as 400s, matching the other Home Assistant input checks. */
-export function badHomeAssistantRequest(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
 
 export interface HomeAssistantActionContext {
   apiKey: string;
@@ -222,11 +216,11 @@ function presenceFlag(value: unknown): string | undefined {
  * unusable.
  */
 function readHistoryEntityIds(value: unknown): string {
-  const entityIds = requiredStringArray(value, "entityIds", badHomeAssistantRequest)
+  const entityIds = requiredStringArray(value, "entityIds", providerInputError)
     .map((entityId) => entityId.trim())
     .filter((entityId) => entityId.length > 0);
   if (entityIds.length === 0) {
-    throw badHomeAssistantRequest("entityIds must contain at least one entity id");
+    throw providerInputError("entityIds must contain at least one entity id");
   }
   return entityIds.join(",");
 }
@@ -280,7 +274,7 @@ export async function requestHomeAssistantText(input: HomeAssistantRequest): Pro
 }
 
 async function requestHomeAssistant(input: HomeAssistantRequest): Promise<Response> {
-  const timeout = createProviderTimeout(input.context.signal, homeAssistantRequestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   try {
     const response = await input.context.fetcher(buildHomeAssistantUrl(input), {
       method: input.method,

@@ -8,13 +8,13 @@ import type {
   ProviderDefinition,
   ProviderProxyExecutor,
   ResolvedCredential,
+  TransitFileUpload,
 } from "../core/types.ts";
 import type { IOAuthClientConfigStore, OAuthClientConfig } from "../oauth/oauth-client-config-service.ts";
 import type { IOAuthStateStore, OAuthAuthorizationState } from "../oauth/oauth-flow-service.ts";
 import type { IProviderLoader } from "../providers/provider-loader.ts";
 import type { RuntimeActionHttpResult } from "./api/runtime-api.ts";
 import type { RuntimeJwtVerifier } from "./api/runtime-jwt.ts";
-import type { TransitFileUpload } from "./files/transit-file-store.ts";
 import type { Logger } from "./logger.ts";
 import type { ISecretCodec } from "./secrets/secret-codec-core.ts";
 import type {
@@ -46,6 +46,7 @@ import { TransitFileService } from "./files/transit-files.ts";
 import { AesGcmSecretCodec } from "./secrets/secret-codec.ts";
 import { decodeRunLogCursor, encodeRunLogCursor } from "./storage/runtime-store.ts";
 import { RuntimeTokenService } from "./storage/runtime-token-service.ts";
+import { SqliteRuntimeDatabase } from "./storage/sqlite-runtime-store.ts";
 
 const apiKeyProvider: ProviderDefinition = {
   service: "example",
@@ -55,6 +56,11 @@ const apiKeyProvider: ProviderDefinition = {
   auth: [{ type: "api_key" }],
   actions: [],
 };
+
+const requestDatabases: SqliteRuntimeDatabase[] = [];
+afterEach(() => {
+  for (const database of requestDatabases.splice(0)) database.close();
+});
 
 const oauthProvider: ProviderDefinition = {
   service: "oauth_example",
@@ -505,6 +511,31 @@ describe("ConnectServer", () => {
       errorCode: "invalid_json",
       meta: { service: "example" },
     });
+  });
+
+  it("accepts case-insensitive JSON media types when disconnecting a named connection", async () => {
+    const app = createTestServer([apiKeyProvider]).createApp();
+    for (const [connectionName, apiKey] of [
+      ["default", "default-key"],
+      ["work", "work-key"],
+    ]) {
+      await app.request("/api/connections/example", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ authType: "api_key", connectionName, values: { apiKey } }),
+      });
+    }
+
+    const response = await app.request("/api/connections/example", {
+      method: "DELETE",
+      headers: { "content-type": "Application/JSON; Charset=UTF-8" },
+      body: JSON.stringify({ connectionName: "work" }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ connectionName: "work", configured: false });
+    const connections = (await (await app.request("/api/connections")).json()) as Array<{ connectionName: string }>;
+    expect(connections.map((connection) => connection.connectionName)).toEqual(["default"]);
   });
 
   it("rejects JSON request bodies that are not objects", async () => {
@@ -2407,6 +2438,20 @@ describe("ConnectServer", () => {
     expect(markdown).toContain("`messages:read`");
   });
 
+  it("renders agent.md request examples against the configured public origin", async () => {
+    const app = createTestServer([{ ...apiKeyProvider, actions: [echoAction] }], {
+      publicOrigin: "https://connector.example.com",
+    }).createApp();
+
+    const response = await app.request("/api/actions/example.echo/agent.md");
+
+    expect(response.status).toBe(200);
+    const markdown = await response.text();
+    expect(markdown).toContain("curl -s https://connector.example.com/v1/actions/example.echo \\");
+    expect(markdown).toContain('fetch("https://connector.example.com/v1/actions/example.echo"');
+    expect(markdown).not.toContain("localhost");
+  });
+
   it("returns connection errors for action agent.md instead of 500", async () => {
     const app = createTestServer([
       {
@@ -3167,7 +3212,7 @@ describe("ConnectServer", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-oomol-connector-alias": "work",
+        "x-oo-connector-alias": "work",
       },
       body: JSON.stringify({ input: {} }),
     });
@@ -3204,7 +3249,7 @@ describe("ConnectServer", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-oomol-connector-alias": "work",
+        "x-oo-connector-alias": "work",
       },
       body: JSON.stringify({
         endpoint: "/items",
@@ -3232,6 +3277,89 @@ describe("ConnectServer", () => {
         },
       },
       meta: {},
+    });
+  });
+
+  it("propagates HTTP request cancellation to provider proxy execution", async () => {
+    const controller = new AbortController();
+    let proxyStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      proxyStarted = resolve;
+    });
+    let proxySignal: AbortSignal | undefined;
+    const app = createTestServer([apiKeyProvider], {
+      providerLoader: new ProxyProviderLoader(async (_input, context) => {
+        proxySignal = context.signal;
+        proxyStarted?.();
+        await new Promise<void>((_resolve, reject) => {
+          if (!context.signal) {
+            reject(new Error("proxy request signal missing"));
+            return;
+          }
+          context.signal.addEventListener("abort", () => reject(new Error("proxy request aborted")), { once: true });
+        });
+        return { ok: true, response: { status: 200, headers: {}, data: {} } };
+      }),
+    }).createApp();
+
+    await app.request("/api/connections/example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authType: "api_key", values: { apiKey: "example-key" } }),
+    });
+
+    const responsePromise = app.fetch(
+      new Request("http://localhost/v1/proxy/example", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ endpoint: "/items", method: "GET" }),
+        signal: controller.signal,
+      }),
+    );
+    await started;
+    controller.abort();
+    const response = await responsePromise;
+
+    expect(proxySignal?.aborted).toBe(true);
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      errorCode: "internal_error",
+    });
+  });
+
+  it("reports a provider proxy timeout as HTTP 500 with data.status 504", async () => {
+    const app = createTestServer([apiKeyProvider], {
+      providerLoader: new ProxyProviderLoader(async () => ({
+        // The failure defineProviderProxy returns once its per-request deadline fires.
+        ok: false,
+        error: {
+          code: "provider_error",
+          message: "example request timed out",
+          details: { status: 504, details: undefined },
+        },
+      })),
+    }).createApp();
+
+    await app.request("/api/connections/example", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ authType: "api_key", values: { apiKey: "example-key" } }),
+    });
+
+    const response = await app.request("/v1/proxy/example", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ endpoint: "/items", method: "GET" }),
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      message: "example request timed out",
+      data: { status: 504 },
+      errorCode: "provider_error",
+      meta: { service: "example" },
     });
   });
 
@@ -3544,6 +3672,7 @@ interface TestAuthOptions {
 
 interface CreateTestServerOptions {
   auth?: TestAuthOptions;
+  publicOrigin?: string;
   actionPolicy?: ActionPolicyService;
   actionSearch?: ActionSearchIndexProvider;
   providerLoader?: IProviderLoader;
@@ -3560,10 +3689,12 @@ interface CreateTestServerOptions {
 }
 
 function createTestServer(providers: ProviderDefinition[], options: CreateTestServerOptions = {}): ConnectServer {
+  const requestDatabase = new SqliteRuntimeDatabase(":memory:");
+  requestDatabases.push(requestDatabase);
   const catalog = createCatalogStore(providers, {
     executableActionIds: ["example.echo"],
   });
-  const providerLoader = options.providerLoader ?? new EmptyProviderLoader();
+  const providerLoader: IProviderLoader = options.providerLoader ?? new EmptyProviderLoader();
   const idempotency = options.idempotency ?? new MemoryIdempotencyStore();
   const runtimeTokens = options.runtimeTokens ?? new RuntimeTokenService(new MemoryRuntimeTokenStore());
   const runs = options.runs ?? new MemoryRunLogStore();
@@ -3597,20 +3728,22 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     connections,
     runs,
     transitFiles,
-    actionPolicy: options.actionPolicy,
     logger: options.logger,
   });
   const staticRoot = typeof options.staticRoot === "string" ? options.staticRoot : undefined;
 
   return new ConnectServer({
     catalog,
+    publicOrigin: options.publicOrigin ?? "http://localhost:3000",
     providerLoader,
     connections,
     oauthClientConfigs: clientConfigs,
     oauthFlow: new OAuthFlowService({
       clientConfigs,
       connections,
+      providerLoader,
       states: new MemoryOAuthStateStore(),
+      requests: requestDatabase.connectionRequestStore,
       secretCodec: options.secretCodec,
       isCustomClientConfigAllowed,
     }),
@@ -3620,7 +3753,7 @@ function createTestServer(providers: ProviderDefinition[], options: CreateTestSe
     uploadTransitFile: options.uploadTransitFile,
     runtimeTokens,
     runtimePolicyStore: options.runtimePolicyStore ?? new MemoryRuntimePolicyStore(),
-    registerStaticRoutes: staticRoot ? (app) => registerStaticRoutes(app, staticRoot) : undefined,
+    registerStaticRoutes: staticRoot ? (app) => registerStaticRoutes(app, { root: staticRoot }) : undefined,
     auth: {
       ...options.auth,
       hasRuntimeTokens: async () => (await runtimeTokens.listTokens()).length > 0,
@@ -3882,6 +4015,12 @@ class MemoryOAuthClientConfigStore implements IOAuthClientConfigStore {
 
 class MemoryOAuthStateStore implements IOAuthStateStore {
   private readonly states = new Map<string, OAuthAuthorizationState>();
+
+  async deleteCreatedBefore(cutoff: string): Promise<void> {
+    for (const [state, value] of this.states) {
+      if (value.createdAt < cutoff) this.states.delete(state);
+    }
+  }
 
   async set(state: OAuthAuthorizationState): Promise<void> {
     this.states.set(state.state, state);

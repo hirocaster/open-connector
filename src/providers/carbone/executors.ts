@@ -1,9 +1,14 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
-import { compactObject, optionalBoolean, optionalRecord, optionalString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, providerUserAgent, ProviderRequestError } from "../provider-runtime.ts";
+import { compactObject, optionalBoolean, optionalNumber, optionalRecord, optionalString } from "../../core/cast.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  providerUserAgent,
+  ProviderRequestError,
+} from "../provider-runtime.ts";
 
 const service = "carbone";
 const carboneApiBaseUrl = "https://api.carbone.io";
@@ -32,6 +37,17 @@ export const carboneActionHandlers: ProviderActionHandlers<"carbone", CarboneAct
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, carboneActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: carboneApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    if (!headers.has("accept")) headers.set("accept", "application/json");
+    if (!headers.has("carbone-version")) headers.set("carbone-version", String(carboneDefaultVersion));
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -63,9 +79,9 @@ async function listTemplates(input: Record<string, unknown>, context: ApiKeyProv
       search: readOptionalTrimmedString(input.search),
       includeVersions: optionalBoolean(input.includeVersions),
       cursor: readOptionalTrimmedString(input.cursor),
-      limit: readOptionalNumber(input.limit),
+      limit: optionalNumber(input.limit),
     }),
-    readOptionalNumber(input.carboneVersion),
+    optionalNumber(input.carboneVersion),
     context.apiKey,
     context.fetcher,
     "execute",
@@ -88,7 +104,7 @@ async function listStringCollection(
   const payload = await carboneGetJson(
     path,
     {},
-    readOptionalNumber(input.carboneVersion),
+    optionalNumber(input.carboneVersion),
     context.apiKey,
     context.fetcher,
     "execute",
@@ -107,7 +123,7 @@ async function updateTemplateMetadata(input: Record<string, unknown>, context: A
   const payload = await carboneRequestJson(
     `/template/${encodeURIComponent(templateIdOrVersionId)}`,
     "PATCH",
-    readOptionalNumber(input.carboneVersion),
+    optionalNumber(input.carboneVersion),
     metadata,
     context.apiKey,
     context.fetcher,
@@ -126,7 +142,7 @@ async function deleteTemplate(input: Record<string, unknown>, context: ApiKeyPro
   const payload = await carboneRequestJson(
     `/template/${encodeURIComponent(templateIdOrVersionId)}`,
     "DELETE",
-    readOptionalNumber(input.carboneVersion),
+    optionalNumber(input.carboneVersion),
     undefined,
     context.apiKey,
     context.fetcher,
@@ -249,7 +265,7 @@ function normalizePagination(record: Record<string, unknown>) {
   return {
     cursor: readOptionalTrimmedString(pagination.cursor ?? record.cursor) ?? null,
     nextCursor: readOptionalTrimmedString(pagination.nextCursor ?? record.nextCursor) ?? null,
-    limit: readOptionalNumber(pagination.limit ?? record.limit) ?? null,
+    limit: optionalNumber(pagination.limit ?? record.limit) ?? null,
   };
 }
 
@@ -266,8 +282,4 @@ function readRequiredString(value: unknown, fieldName: string) {
 function readOptionalTrimmedString(value: unknown) {
   if (typeof value !== "string") return undefined;
   return value.trim() || undefined;
-}
-
-function readOptionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

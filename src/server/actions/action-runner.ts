@@ -1,7 +1,8 @@
 import type { CatalogStore } from "../../catalog-store.ts";
 import type { ConnectionService, ConnectionSummary, ExecutionConnection } from "../../connection-service.ts";
-import type { ActionPolicyDecision, ActionPolicyService, ActionPolicySnapshot } from "../../core/action-policy.ts";
+import type { ActionPolicyDecision, ActionPolicySnapshot } from "../../core/action-policy.ts";
 import type { ExecutionContext, ExecutionResult, TransitFileWriter } from "../../core/types.ts";
+import type { MarketplaceService } from "../../marketplace/marketplace-service.ts";
 import type { IProviderLoader } from "../../providers/provider-loader.ts";
 import type { Logger } from "../logger.ts";
 import type { IRunLogStore, RunLog, RunLogCaller, RunLogListInput, RunLogPage } from "../storage/runtime-store.ts";
@@ -16,8 +17,8 @@ export interface ActionRunnerOptions {
   connections: ConnectionService;
   runs: IRunLogStore;
   transitFiles?: TransitFileWriter;
-  actionPolicy?: ActionPolicyService;
   logger?: Logger;
+  marketplace?: MarketplaceService;
 }
 
 export interface RunActionInput {
@@ -25,7 +26,7 @@ export interface RunActionInput {
   input: unknown;
   caller: RunLogCaller;
   connectionName?: string;
-  policy?: ActionPolicySnapshot;
+  policy: ActionPolicySnapshot;
   runtimeTokenId?: string;
   signal?: AbortSignal;
 }
@@ -71,8 +72,7 @@ export class ActionRunner {
     this.options.logger?.info(logContext, "action run started");
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
-    const snapshot = input.policy ?? this.options.actionPolicy?.createSnapshot();
-    let policy: ActionPolicyDecision = snapshot?.evaluate(action) ?? { allowed: true, checks: [] };
+    let policy: ActionPolicyDecision = input.policy.evaluate(action);
     let connection: ExecutionConnection | undefined;
     let result: ExecutionResult;
     if (!policy.allowed) {
@@ -84,24 +84,35 @@ export class ActionRunner {
         const summary = await this.options.connections.getConnectionSummary(action.service, input.connectionName);
         input.signal?.throwIfAborted();
         const connectionPolicy =
-          summary?.authType === "no_auth" ? undefined : snapshot?.evaluateConnection(summary?.id);
+          summary?.authType === "no_auth" ? undefined : input.policy.evaluateConnection(summary?.id);
         if (connectionPolicy && !connectionPolicy.allowed) {
           policy = connectionPolicy;
           result = { ok: false, error: { code: policy.code, message: policy.message } };
+        } else if (summary?.authType === "marketplace" && !this.options.marketplace?.supportsAction(action.id)) {
+          result = {
+            ok: false,
+            error: {
+              code: "connection_not_found",
+              message: "The selected Marketplace connection does not support this action.",
+            },
+          };
         } else {
           connection = await this.options.connections.resolveForExecution(action.service, input.connectionName);
           input.signal?.throwIfAborted();
-          const executor = action.execution.locallyExecutable
-            ? await this.options.providerLoader.loadActionExecutor(
-                action.service,
-                action.id,
-                this.options.catalog.providers.find((provider) => provider.service === action.service)?.displayName,
-              )
-            : undefined;
+          const executor =
+            action.execution.locallyExecutable && !connection.marketplace
+              ? await this.options.providerLoader.loadActionExecutor(
+                  action.service,
+                  action.id,
+                  this.options.catalog.providers.find((provider) => provider.service === action.service)?.displayName,
+                )
+              : undefined;
           input.signal?.throwIfAborted();
           result = await executeProviderAction(
             action,
-            executor,
+            connection.marketplace
+              ? (actionInput) => this.options.marketplace!.execute(action.id, actionInput, input.signal)
+              : executor,
             input.input,
             this.createExecutionContext(connection.getCredential, input.signal),
           );
@@ -112,7 +123,7 @@ export class ActionRunner {
       } catch (error) {
         const missingConnectionPolicy =
           error instanceof ConnectionError && error.code === "connection_not_found"
-            ? snapshot?.evaluateConnection()
+            ? input.policy.evaluateConnection()
             : undefined;
         if (input.signal?.aborted) {
           result = cancelledExecutionResult();
@@ -146,8 +157,8 @@ export class ActionRunner {
       connectionProfile: connection?.summary?.profile,
       runtimeTokenId: input.runtimeTokenId,
       policy,
-      inputSummary: this.summarizeAuditValue(input.input, logContext),
-      outputSummary: result.ok ? this.summarizeAuditValue(result.output, logContext) : undefined,
+      inputSummary: summarizeForRunLog(input.input),
+      outputSummary: result.ok ? summarizeForRunLog(result.output) : undefined,
       ...auditError,
     };
 
@@ -201,15 +212,6 @@ export class ActionRunner {
       context.transitFiles = this.options.transitFiles;
     }
     return context;
-  }
-
-  private summarizeAuditValue(value: unknown, logContext: Record<string, unknown>): unknown {
-    try {
-      return summarizeForRunLog(value);
-    } catch {
-      this.options.logger?.warn(logContext, "run audit summary unavailable");
-      return "[unavailable]";
-    }
   }
 }
 

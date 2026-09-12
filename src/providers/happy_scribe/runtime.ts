@@ -1,6 +1,6 @@
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 
-import { optionalBoolean, optionalInteger, optionalRecord, optionalString } from "../../core/cast.ts";
+import { optionalBoolean, optionalInteger, optionalRecord, optionalString, recordOrEmpty } from "../../core/cast.ts";
 import { jsonObject } from "../../core/request.ts";
 import {
   createProviderTimeout,
@@ -17,7 +17,6 @@ interface ApiKeyProviderActionInput {
 }
 
 const happyScribeApiBaseUrl = "https://www.happyscribe.com/api/v1";
-const requestTimeoutMs = 30_000;
 
 type RequestPhase = "validate" | "execute";
 type ActionHandler = (input: Record<string, unknown>, fetcher: typeof fetch, apiKey: string) => Promise<unknown>;
@@ -55,7 +54,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { order: normalizeObject(payload) };
+    return { order: recordOrEmpty(payload) };
   },
   async create_translation_order(input, fetcher, apiKey) {
     const payload = await requestHappyScribe({
@@ -74,7 +73,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { order: normalizeObject(payload) };
+    return { order: recordOrEmpty(payload) };
   },
   async get_order(input, fetcher, apiKey) {
     const payload = await requestHappyScribe({
@@ -84,7 +83,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { order: normalizeObject(payload) };
+    return { order: recordOrEmpty(payload) };
   },
   async confirm_order(input, fetcher, apiKey) {
     const orderId = readRequiredString(input.orderId, "orderId");
@@ -122,7 +121,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { transcription: normalizeObject(payload) };
+    return { transcription: recordOrEmpty(payload) };
   },
   async update_transcription(input, fetcher, apiKey) {
     const payload = await requestHappyScribe({
@@ -140,7 +139,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { transcription: normalizeObject(payload) };
+    return { transcription: recordOrEmpty(payload) };
   },
   async delete_transcription(input, fetcher, apiKey) {
     const transcriptionId = readRequiredString(input.transcriptionId, "transcriptionId");
@@ -174,7 +173,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { export: normalizeObject(payload) };
+    return { export: recordOrEmpty(payload) };
   },
   async get_export(input, fetcher, apiKey) {
     const payload = await requestHappyScribe({
@@ -184,7 +183,7 @@ const happyScribeActionHandlers: ProviderActionHandlers<"happy_scribe", ActionHa
       fetcher,
       phase: "execute",
     });
-    return { export: normalizeObject(payload) };
+    return { export: recordOrEmpty(payload) };
   },
 };
 
@@ -236,7 +235,7 @@ async function requestHappyScribe(input: {
   fetcher: typeof fetch;
   phase: RequestPhase;
 }) {
-  const timeout = createProviderTimeout(undefined, requestTimeoutMs);
+  const timeout = createProviderTimeout(undefined);
   try {
     const response = await input.fetcher(buildUrl(input.path, input.params), {
       method: input.method,
@@ -305,8 +304,8 @@ function createHappyScribeError(status: number, payload: unknown, phase: Request
 }
 
 function normalizeOrganizations(payload: unknown) {
-  const organizations = readOrganizations(payload).map(normalizeObject);
-  return { organizations, raw: normalizeObject(payload) };
+  const organizations = readOrganizations(payload).map(recordOrEmpty);
+  return { organizations, raw: recordOrEmpty(payload) };
 }
 
 function readOrganizations(payload: unknown): unknown[] {
@@ -322,11 +321,7 @@ function normalizeTranscriptions(payload: unknown) {
     : object && Array.isArray(object.results)
       ? object.results
       : [];
-  return { transcriptions: transcriptions.map(normalizeObject), raw: normalizeObject(payload) };
-}
-
-function normalizeObject(payload: unknown): Record<string, unknown> {
-  return optionalRecord(payload) ?? {};
+  return { transcriptions: transcriptions.map(recordOrEmpty), raw: recordOrEmpty(payload) };
 }
 
 function readRequiredString(value: unknown, fieldName: string) {

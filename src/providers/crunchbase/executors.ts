@@ -1,19 +1,19 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, optionalString, requiredRecord, requiredString } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
   defineApiKeyProviderExecutors,
-  isAbortLikeError,
+  defineProviderProxy,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 const service = "crunchbase";
 const crunchbaseApiBaseUrl = "https://api.crunchbase.com/v4";
-const crunchbaseRequestTimeoutMs = 30_000;
 
 type CrunchbasePhase = "validate" | "execute";
 type CrunchbaseActionHandler = (input: Record<string, unknown>, context: ApiKeyProviderContext) => Promise<unknown>;
@@ -120,6 +120,16 @@ export const crunchbaseActionHandlers: ProviderActionHandlers<"crunchbase", Crun
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, crunchbaseActionHandlers);
 
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: crunchbaseApiBaseUrl,
+  auth: { type: "api_key_header", name: "X-cb-user-key" },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
+
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
     await requestCrunchbaseJson({
@@ -155,8 +165,7 @@ async function requestCrunchbaseJson(input: {
     appendQueryValue(url, key, value);
   }
 
-  const timeout = createProviderTimeout(input.context.signal, crunchbaseRequestTimeoutMs);
-  try {
+  return runProviderRequest({ signal: input.context.signal, label: "crunchbase" }, async (signal) => {
     const response = await input.context.fetcher(url.toString(), {
       method: input.method ?? "GET",
       headers: {
@@ -165,7 +174,7 @@ async function requestCrunchbaseJson(input: {
         "user-agent": providerUserAgent,
         ...(input.body ? { "content-type": "application/json" } : {}),
       },
-      signal: timeout.signal,
+      signal,
       body: input.body === undefined ? undefined : JSON.stringify(input.body),
     });
     const payload = await readCrunchbasePayload(response, response.ok);
@@ -173,18 +182,7 @@ async function requestCrunchbaseJson(input: {
       throw createCrunchbaseError(response.status, payload, input.phase);
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) throw error;
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "crunchbase request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `crunchbase request failed: ${error.message}` : "crunchbase request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 async function readCrunchbasePayload(response: Response, requireJson: boolean): Promise<unknown> {
@@ -277,8 +275,4 @@ function requireArray(value: unknown, message: string): unknown[] {
 function requireInteger(value: unknown, message: string): number {
   if (!Number.isInteger(value)) throw new ProviderRequestError(502, message);
   return value as number;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

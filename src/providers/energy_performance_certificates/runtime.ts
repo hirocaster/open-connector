@@ -10,8 +10,7 @@ import {
   providerUserAgent,
 } from "../provider-runtime.ts";
 
-const energyPerformanceCertificatesApiBaseUrl = "https://api.get-energy-performance-data.communities.gov.uk";
-const requestTimeoutMs = 30_000;
+export const energyPerformanceCertificatesApiBaseUrl = "https://api.get-energy-performance-data.communities.gov.uk";
 
 type EnergyPerformanceCertificatesPhase = "validate" | "execute";
 type SearchFamily = "domestic" | "non-domestic" | "display";
@@ -127,7 +126,7 @@ async function requestJson(input: {
     }
   }
 
-  const timeout = createProviderTimeout(input.context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(input.context.signal);
   let response: Response;
   let payload: unknown;
   try {

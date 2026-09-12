@@ -1,4 +1,4 @@
-import type { ProviderActionHandlers } from "../provider-runtime.ts";
+import type { ApiKeyActionRequest, ProviderActionHandlers } from "../provider-runtime.ts";
 import type { PayrexxActionName } from "./actions.ts";
 
 import {
@@ -18,14 +18,6 @@ export interface PayrexxCredentialCheck {
   providerMetadata: Record<string, unknown>;
 }
 
-interface ApiKeyProviderActionInput {
-  apiKey: string;
-  actionName: string;
-  input: Record<string, unknown>;
-  providerMetadata?: Record<string, unknown>;
-  values?: Record<string, string>;
-}
-
 export const payrexxApiBaseUrl = "https://api.payrexx.com/v1.16";
 
 const requestTimeoutMs = 30_000;
@@ -33,7 +25,7 @@ const requestTimeoutMs = 30_000;
 type QueryValue = string | number | boolean | undefined;
 type PayrexxPhase = "validate" | "execute";
 type PayrexxHandler = (
-  input: ApiKeyProviderActionInput & {
+  input: ApiKeyActionRequest & {
     actionName: PayrexxActionName;
     input: Record<string, unknown>;
   },
@@ -161,7 +153,7 @@ export async function validatePayrexxCredential(
 }
 
 export async function executePayrexxAction(
-  input: ApiKeyProviderActionInput & {
+  input: ApiKeyActionRequest & {
     actionName: PayrexxActionName;
     input: Record<string, unknown>;
   },
@@ -255,7 +247,7 @@ function normalizePayrexxError(response: Response, payload: PayrexxResponse, pha
     response.status === 403 ||
     (response.status === 200 && isCredentialErrorMessage(message))
   ) {
-    return new ProviderRequestError(409, message);
+    return new ProviderRequestError(401, message);
   }
   if (response.status === 404) return new ProviderRequestError(404, message);
   return new ProviderRequestError(response.status >= 500 ? 502 : 400, message);

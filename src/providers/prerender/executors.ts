@@ -1,5 +1,4 @@
 import type {
-  CredentialValidationResult,
   ProviderProxyExecutor,
   ProxyExecutionResult,
   ProxyRequestInput,
@@ -8,7 +7,7 @@ import type {
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
-import { compactObject, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
+import { compactObject, optionalRecord, optionalString } from "../../core/cast.ts";
 import {
   createProviderFetch,
   createProviderProxyUrl,
@@ -20,13 +19,13 @@ import {
   readProviderProxyErrorMessage,
   readProviderProxyResponse,
   requireApiKeyCredential,
+  requiredInputString,
   toProviderProxyError,
 } from "../provider-runtime.ts";
 
 const service = "prerender";
 const prerenderApiBaseUrl = "https://api.prerender.io";
 const prerenderFetch = createProviderFetch({ skipDnsValidation: true });
-const validationEndpoint = "/cache-clear-status/{prerenderToken}";
 
 type PrerenderPhase = "validate" | "execute";
 
@@ -121,30 +120,6 @@ export const proxy: ProviderProxyExecutor = async (
     return toProviderProxyError(error, "Prerender request failed");
   }
 };
-
-export async function validatePrerenderCredential(
-  input: Record<string, string>,
-  fetcher: typeof fetch,
-): Promise<CredentialValidationResult> {
-  const apiKey = requiredString(input.apiKey, "apiKey", (message) => new ProviderRequestError(401, message));
-  const response = await requestPrerender({
-    path: buildCacheClearStatusPath(apiKey),
-    method: "GET",
-    context: { apiKey, fetcher },
-    phase: "validate",
-    expectedStatuses: [403],
-  });
-
-  return {
-    profile: { accountId: "prerender-api-token", displayName: "Prerender API Token", grantedScopes: [] },
-    grantedScopes: [],
-    metadata: {
-      apiBaseUrl: prerenderApiBaseUrl,
-      validationEndpoint,
-      cacheClearStatus: response.status === 403 ? "in_progress" : "idle",
-    },
-  };
-}
 
 async function requestPrerender(input: {
   path: string;
@@ -254,10 +229,6 @@ function readRequiredUrl(value: unknown, fieldName: string): string {
   } catch {
     throw new ProviderRequestError(400, `${fieldName} must be a valid URL`);
   }
-}
-
-function requiredInputString(value: unknown, fieldName: string): string {
-  return requiredString(value, fieldName, (message) => new ProviderRequestError(400, message));
 }
 
 function readOptionalAdaptiveType(value: unknown): "mobile" | "desktop" | undefined {

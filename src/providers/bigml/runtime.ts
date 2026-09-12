@@ -12,11 +12,10 @@ import {
   requiredString,
 } from "../../core/cast.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
   providerUserAgent,
   ProviderRequestError,
   readProviderJsonBody,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 
 export interface BigmlContext {
@@ -33,7 +32,6 @@ interface BigmlStatus {
 }
 
 export const bigmlApiBaseUrl = "https://bigml.io/andromeda";
-const timeoutMs = 30_000;
 export const bigmlActionHandlers: ProviderActionHandlers<"bigml", ProviderRuntimeHandler<BigmlContext>> = {
   async list_models(input, context) {
     const payload = await request("/model", "GET", buildListQuery(input), undefined, context, "execute");
@@ -137,8 +135,7 @@ async function request(
   context: BigmlContext,
   phase: "validate" | "execute",
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, timeoutMs);
-  try {
+  return runProviderRequest({ signal: context.signal, label: "BigML" }, async (signal) => {
     const url = new URL(path.startsWith("/") ? path.slice(1) : path, `${bigmlApiBaseUrl}/`);
     url.searchParams.set("username", context.username);
     url.searchParams.set("api_key", context.apiKey);
@@ -152,7 +149,7 @@ async function request(
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: timeout.signal,
+      signal,
     });
     const payload = await readProviderJsonBody(response, {
       emptyBody: null,
@@ -174,16 +171,7 @@ async function request(
       );
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) throw error;
-    if (timeout.didTimeout() || isAbortLikeError(error)) throw new ProviderRequestError(504, "BigML request timed out");
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `BigML request failed: ${error.message}` : "BigML request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 function buildListQuery(input: Record<string, unknown>): Record<string, unknown> {
   return compactObject({

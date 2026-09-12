@@ -15,14 +15,15 @@ import {
   createProviderTimeout,
   isAbortSignalError,
   parseProviderJsonBodyText,
+  providerInputError,
   ProviderRequestError,
+  providerResponseError,
   providerUserAgent,
   readProviderTextBody,
 } from "../provider-runtime.ts";
 import { qdrantUuidPattern } from "./actions.ts";
 
 const service = "qdrant";
-const requestTimeoutMs = 30_000;
 const qdrantHostnameSuffix = ".cloud.qdrant.io";
 
 type QdrantRequestPhase = "validate" | "execute";
@@ -199,7 +200,7 @@ async function requestQdrantJson(
   body: object | undefined,
   phase: QdrantRequestPhase,
 ): Promise<unknown> {
-  const timeout = createProviderTimeout(context.signal, requestTimeoutMs);
+  const timeout = createProviderTimeout(context.signal);
   try {
     const response = await context.fetcher(new URL(path, `${context.clusterUrl.origin}/`), {
       method,
@@ -242,7 +243,7 @@ async function requestQdrantJson(
   }
 }
 
-function normalizeQdrantClusterUrl(value: string | undefined): URL {
+export function normalizeQdrantClusterUrl(value: unknown): URL {
   const url = assertPublicHttpUrl(requiredString(value, "clusterUrl", providerInputError), {
     fieldName: "clusterUrl",
     createError: providerInputError,
@@ -434,11 +435,3 @@ function isDistance(value: string): value is "Cosine" | "Euclid" | "Dot" | "Manh
 }
 
 const uuidPattern = new RegExp(qdrantUuidPattern);
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
-}
-
-function providerResponseError(message: string): ProviderRequestError {
-  return new ProviderRequestError(502, message);
-}

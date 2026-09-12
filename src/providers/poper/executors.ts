@@ -12,6 +12,7 @@ import {
   createProviderProxyUrl,
   normalizeProviderProxyHeaders,
   providerFetch,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
   readProviderProxyErrorMessage,
@@ -22,7 +23,6 @@ import {
 
 const service = "poper";
 const baseUrl = "https://api.poper.ai/general/v1";
-const timeoutMs = 30_000;
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, {
   list_popups(_input, context) {
@@ -31,7 +31,7 @@ export const executors: ProviderExecutors = defineApiKeyProviderExecutors(servic
   list_popup_responses(input, context) {
     return requestPoper(
       "/popup/responses",
-      { popup_id: requiredString(input.popup_id, "popup_id", badInput) },
+      { popup_id: requiredString(input.popup_id, "popup_id", providerInputError) },
       context.apiKey,
       context.fetcher,
       context.signal,
@@ -85,7 +85,7 @@ async function requestPoper(
   signal?: AbortSignal,
   validation = false,
 ): Promise<Record<string, unknown>> {
-  const timeout = createProviderTimeout(signal, timeoutMs);
+  const timeout = createProviderTimeout(signal);
   try {
     const response = await fetcher(`${baseUrl}${path}`, {
       method: "POST",
@@ -130,8 +130,4 @@ function parseJson(text: string): unknown {
   } catch {
     return text;
   }
-}
-
-function badInput(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

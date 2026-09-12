@@ -14,18 +14,17 @@ import {
 } from "../../core/cast.ts";
 import { encodePathSegment } from "../../core/request.ts";
 import {
-  createProviderTimeout,
-  isAbortLikeError,
   mapProviderActionHandlers,
+  providerInputError,
   providerUserAgent,
   ProviderRequestError,
+  runProviderRequest,
 } from "../provider-runtime.ts";
 import { longbridgeOAuthScopes } from "./actions.ts";
 import { indexSymbolToCounterId, symbolToCounterId } from "./counter-id.ts";
 import { longbridgeReadonlyActionSpecs, longbridgeScreenerDefaultReturns } from "./readonly-action-specs.ts";
 
-const longbridgeApiBaseUrl = "https://openapi.longbridge.com";
-const longbridgeRequestTimeoutMs = 30_000;
+export const longbridgeApiBaseUrl = "https://openapi.longbridge.com";
 
 export type LongbridgeHttpMethod = "GET" | "POST" | "PUT" | "DELETE";
 type LongbridgeRequestPhase = "connect" | "execute";
@@ -379,28 +378,14 @@ export async function validateLongbridgeCredential(
 
 export async function requestLongbridgeJson(input: LongbridgeRequestOptions): Promise<unknown> {
   const url = buildLongbridgeUrl(input.path, input.query);
-  const timeout = createProviderTimeout(input.context.signal, longbridgeRequestTimeoutMs);
-  try {
-    const response = await input.context.fetcher(url, buildLongbridgeRequestInit(input, timeout.signal));
+  return runProviderRequest({ signal: input.context.signal, label: "Longbridge" }, async (signal) => {
+    const response = await input.context.fetcher(url, buildLongbridgeRequestInit(input, signal));
     const payload = await readLongbridgeJson(response);
     if (!response.ok) {
       throw mapLongbridgeHttpError(response.status, payload, input.phase);
     }
     return payload;
-  } catch (error) {
-    if (error instanceof ProviderRequestError) {
-      throw error;
-    }
-    if (timeout.didTimeout() || isAbortLikeError(error)) {
-      throw new ProviderRequestError(504, "Longbridge request timed out");
-    }
-    throw new ProviderRequestError(
-      502,
-      error instanceof Error ? `Longbridge request failed: ${error.message}` : "Longbridge request failed",
-    );
-  } finally {
-    timeout.cleanup();
-  }
+  });
 }
 
 function buildLongbridgeRequestInit(input: LongbridgeRequestOptions, signal: AbortSignal): RequestInit {
@@ -825,10 +810,6 @@ function uniqueStrings(values: readonly string[]): string[] {
     }
   }
   return result;
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
 
 function dateToUnixSeconds(value: string, edge: "end" | "start"): number {

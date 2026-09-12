@@ -1,9 +1,15 @@
-import type { CredentialValidators, ProviderExecutors } from "../../core/types.ts";
+import type { CredentialValidators, ProviderExecutors, ProviderProxyExecutor } from "../../core/types.ts";
 import type { ProviderActionHandlers } from "../provider-runtime.ts";
 import type { ApiKeyProviderContext } from "../provider-runtime.ts";
 
 import { compactObject, optionalBoolean, optionalRecord, optionalString, requiredString } from "../../core/cast.ts";
-import { defineApiKeyProviderExecutors, ProviderRequestError, providerUserAgent } from "../provider-runtime.ts";
+import {
+  defineApiKeyProviderExecutors,
+  defineProviderProxy,
+  providerInputError,
+  ProviderRequestError,
+  providerUserAgent,
+} from "../provider-runtime.ts";
 import { missiveMailboxFilterNames } from "./actions.ts";
 
 const service = "missive";
@@ -65,7 +71,7 @@ export const missiveActionHandlers: ProviderActionHandlers<"missive", MissiveAct
   },
   async get_contact(input, context) {
     const payload = await requestMissiveJson({
-      path: `/v1/contacts/${encodeURIComponent(requiredString(input.id, "id", invalidInputError))}`,
+      path: `/v1/contacts/${encodeURIComponent(requiredString(input.id, "id", providerInputError))}`,
       context,
       notFoundAsInvalidInput: true,
     });
@@ -102,7 +108,7 @@ export const missiveActionHandlers: ProviderActionHandlers<"missive", MissiveAct
   },
   async get_conversation(input, context) {
     const payload = await requestMissiveJson({
-      path: `/v1/conversations/${encodeURIComponent(requiredString(input.id, "id", invalidInputError))}`,
+      path: `/v1/conversations/${encodeURIComponent(requiredString(input.id, "id", providerInputError))}`,
       context,
       notFoundAsInvalidInput: true,
     });
@@ -112,6 +118,16 @@ export const missiveActionHandlers: ProviderActionHandlers<"missive", MissiveAct
 };
 
 export const executors: ProviderExecutors = defineApiKeyProviderExecutors(service, missiveActionHandlers);
+
+export const proxy: ProviderProxyExecutor = defineProviderProxy({
+  service,
+  baseUrl: missiveApiBaseUrl,
+  auth: { type: "api_key_authorization", prefix: "Bearer " },
+  skipDnsValidation: true,
+  customizeRequest({ headers }) {
+    headers.set("accept", "application/json");
+  },
+});
 
 export const credentialValidators: CredentialValidators = {
   async apiKey(input, { fetcher, signal }) {
@@ -293,8 +309,4 @@ function extractMissiveMessage(payload: unknown): string | undefined {
   }
 
   return undefined;
-}
-
-function invalidInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }

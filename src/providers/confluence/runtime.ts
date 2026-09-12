@@ -13,8 +13,10 @@ import {
 import {
   createProviderTimeout,
   isAbortLikeError,
+  providerInputError,
   ProviderRequestError,
   providerUserAgent,
+  requiredInputString,
 } from "../provider-runtime.ts";
 
 export const confluenceValidationPath = "/spaces";
@@ -72,7 +74,7 @@ export const confluenceActionHandlers: ProviderActionHandlers<"confluence", Conf
       phase: "execute",
       apiVersion: "v1",
       query: compactObject({
-        cql: requireConfluenceString(input.cql, "cql"),
+        cql: requiredInputString(input.cql, "cql"),
         limit: optionalInteger(input.limit) ?? defaultLimit,
         cursor: optionalString(input.cursor),
       }),
@@ -98,7 +100,7 @@ export const confluenceActionHandlers: ProviderActionHandlers<"confluence", Conf
     const payload = await requestConfluenceJson({
       ...context,
       method: "GET",
-      path: `/pages/${encodeURIComponent(requireConfluenceString(input.pageId, "pageId"))}`,
+      path: `/pages/${encodeURIComponent(requiredInputString(input.pageId, "pageId"))}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
       query: compactObject({
@@ -114,9 +116,9 @@ export const confluenceActionHandlers: ProviderActionHandlers<"confluence", Conf
       path: "/pages",
       phase: "execute",
       body: compactObject({
-        spaceId: requireConfluenceString(input.spaceId, "spaceId"),
+        spaceId: requiredInputString(input.spaceId, "spaceId"),
         status: optionalString(input.status) ?? "current",
-        title: requireConfluenceString(input.title, "title"),
+        title: requiredInputString(input.title, "title"),
         parentId: optionalString(input.parentId),
         body: buildPageBody(input),
       }),
@@ -127,13 +129,13 @@ export const confluenceActionHandlers: ProviderActionHandlers<"confluence", Conf
     const payload = await requestConfluenceJson({
       ...context,
       method: "PUT",
-      path: `/pages/${encodeURIComponent(requireConfluenceString(input.pageId, "pageId"))}`,
+      path: `/pages/${encodeURIComponent(requiredInputString(input.pageId, "pageId"))}`,
       phase: "execute",
       notFoundAsInvalidInput: true,
       body: compactObject({
-        id: requireConfluenceString(input.pageId, "pageId"),
+        id: requiredInputString(input.pageId, "pageId"),
         status: optionalString(input.status) ?? "current",
-        title: requireConfluenceString(input.title, "title"),
+        title: requiredInputString(input.title, "title"),
         body: buildOptionalPageBody(input),
         version: compactObject({
           number: optionalInteger(input.versionNumber),
@@ -465,7 +467,7 @@ function readNextCursor(payload: Record<string, unknown>): string | null {
 function buildPageBody(input: Record<string, unknown>): Record<string, unknown> {
   return {
     representation: optionalString(input.bodyRepresentation) ?? "storage",
-    value: requireConfluenceString(input.body, "body"),
+    value: requiredInputString(input.body, "body"),
   };
 }
 
@@ -480,10 +482,6 @@ function buildOptionalPageBody(input: Record<string, unknown>): Record<string, u
   };
 }
 
-function requireConfluenceString(value: unknown, field: string): string {
-  return requiredString(value, field, providerInputError);
-}
-
 function requireObject(value: unknown, message: string): Record<string, unknown> {
   const object = optionalRecord(value);
   if (!object) {
@@ -494,8 +492,4 @@ function requireObject(value: unknown, message: string): Record<string, unknown>
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
-}
-
-function providerInputError(message: string): ProviderRequestError {
-  return new ProviderRequestError(400, message);
 }
