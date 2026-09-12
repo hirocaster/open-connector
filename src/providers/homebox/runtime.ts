@@ -133,13 +133,6 @@ async function performHomeBoxRequest(options: HomeBoxRequestOptions): Promise<Re
   }
 }
 
-async function readHomeBoxPayload(response: Response): Promise<unknown> {
-  return readProviderJsonBody(response, {
-    emptyBody: null,
-    invalidJsonMessage: "HomeBox returned an invalid JSON response",
-  });
-}
-
 function mapHomeBoxHttpError(status: number, payload: unknown): ProviderRequestError {
   let message: string | undefined;
   if (typeof payload === "string") {
@@ -153,7 +146,10 @@ function mapHomeBoxHttpError(status: number, payload: unknown): ProviderRequestE
 
 async function requestHomeBoxJson(options: HomeBoxRequestOptions): Promise<unknown> {
   const response = await performHomeBoxRequest(options);
-  const payload = await readHomeBoxPayload(response);
+  const payload = await readProviderJsonBody(response, {
+    emptyBody: null,
+    invalidJsonMessage: "HomeBox returned an invalid JSON response",
+  });
   if (response.ok) {
     return payload;
   }
@@ -397,9 +393,6 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     const name = requiredInputString(input.name, "name");
     const completedDate = optionalString(input.completedDate);
     const scheduledDate = optionalString(input.scheduledDate);
-    if (completedDate === undefined && scheduledDate === undefined) {
-      throw providerInputError("Either completedDate or scheduledDate must be set.");
-    }
     const body: Record<string, unknown> = { name };
     if (completedDate !== undefined) body.completedDate = completedDate;
     if (scheduledDate !== undefined) body.scheduledDate = scheduledDate;

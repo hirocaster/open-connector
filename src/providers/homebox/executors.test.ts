@@ -204,21 +204,28 @@ describe("homebox provider", () => {
     expect(url.searchParams.getAll("tags")).toEqual(["a", "b"]);
   });
 
-  it("rejects a maintenance entry without either date", async () => {
+  it("allows a maintenance entry without dates (name is the only required field)", async () => {
     setPrivateNetworkAccessAllowed(true);
     setDefaultGuardedFetchDnsLookup(async () => [{ address: "192.168.150.53", family: 4 }]);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+        if (url.pathname === "/api/v1/entities/entity-1/maintenance" && init?.method === "POST") {
+          return Response.json({ id: "entry-1", name: "Oil change" });
+        }
+        return new Response("not found", { status: 404 });
+      }),
+    );
 
     const result = await executors["homebox.add_maintenance_entry"]!(
       { entityId: "entity-1", name: "Oil change" },
       executionContext(),
     );
-    if (result.ok) {
-      throw new Error("expected maintenance validation to fail");
+    if (!result.ok) {
+      throw new Error(`expected maintenance creation to succeed, got: ${result.error?.message}`);
     }
-    expect(result.error?.code).toBe("invalid_input");
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.output).toEqual({ entry: { id: "entry-1", name: "Oil change" } });
   });
 
   it("reads the custom field names plain array response", async () => {
