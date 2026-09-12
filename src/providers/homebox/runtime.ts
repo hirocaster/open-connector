@@ -44,7 +44,7 @@ interface HomeBoxRequestOptions {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   query?: Record<string, HomeBoxQueryValue>;
-  body?: Record<string, unknown> | readonly unknown[] | FormData;
+  body?: Record<string, unknown> | FormData;
 }
 
 export function resolveHomeBoxBaseUrl(input: {
@@ -84,8 +84,8 @@ function buildHomeBoxUrl(
   path: string,
   query?: Record<string, HomeBoxQueryValue>,
 ): string {
-  const base = `${stripSlashes(context.baseUrl)}/${homeBoxApiPrefix}/`;
-  const url = new URL(`./${stripLeadingSlash(path)}`, base);
+  const base = `${context.baseUrl.replace(/\/+$/, "")}/${homeBoxApiPrefix}/`;
+  const url = new URL(`./${path.replace(/^\/+/, "")}`, base);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value === undefined) {
       continue;
@@ -463,12 +463,4 @@ export async function validateHomeBoxCredential(
       credentialHelpUrl: homeBoxCredentialHelpUrl,
     },
   };
-}
-
-function stripLeadingSlash(value: string): string {
-  return value.replace(/^\/+/, "");
-}
-
-function stripSlashes(value: string): string {
-  return value.replace(/^\/+/, "").replace(/\/+$/, "");
 }
