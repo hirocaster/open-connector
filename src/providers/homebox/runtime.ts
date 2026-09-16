@@ -400,6 +400,17 @@ export const homeBoxActionHandlers: ProviderActionHandlerSubset<"homebox", HomeB
     return { entity: payload };
   },
 
+  async remove_entity_attachment(input, context) {
+    const id = requiredInputString(input.entityId, "entityId");
+    const attachmentId = requiredInputString(input.attachmentId, "attachmentId");
+    await requestHomeBoxJson({
+      context,
+      method: "DELETE",
+      path: `entities/${encodeURIComponent(id)}/attachments/${encodeURIComponent(attachmentId)}`,
+    });
+    return { deleted: true };
+  },
+
   async get_maintenance_log(input, context) {
     const id = requiredInputString(input.entityId, "entityId");
     const payload = await requestHomeBoxJson({

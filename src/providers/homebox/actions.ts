@@ -263,6 +263,23 @@ export const homeBoxActions: ActionDefinition[] = [
     outputSchema: s.actionOutput({ entity: entityOutput }, "The HomeBox entity with the new attachment."),
   }),
   defineProviderAction(service, {
+    name: "remove_entity_attachment",
+    description:
+      "Delete one attachment from a HomeBox entity. The stored file is removed with it.",
+    inputSchema: s.actionInput(
+      {
+        entityId: s.nonEmptyString("The entity UUID owning the attachment."),
+        attachmentId: s.nonEmptyString("The attachment UUID to delete."),
+      },
+      ["entityId", "attachmentId"],
+      "Input parameters for removing one attachment from an entity.",
+    ),
+    outputSchema: s.actionOutput(
+      { deleted: s.boolean("Whether the attachment was deleted.") },
+      "The deletion result.",
+    ),
+  }),
+  defineProviderAction(service, {
     name: "get_maintenance_log",
     description: "Fetch the maintenance log of one HomeBox entity, optionally filtered by status.",
     inputSchema: s.actionInput(
